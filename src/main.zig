@@ -1065,6 +1065,9 @@ const Expression = struct {
                     }
                 }
             },
+            .host_string_underlying => {
+                try str.appendSlice(alloc, host_path.?);
+            },
             else => |o| {
                 report_error(
                     self.bound(),
