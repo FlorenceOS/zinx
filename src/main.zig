@@ -854,7 +854,10 @@ const Expression = struct {
         }
 
         switch(self.value) {
-            .dict, .function, .string, .alias, .host, .host_string_underlying,
+            .dict => |*s| {
+                s.parent = scope;
+            },
+            .function, .string, .alias, .host, .host_string_underlying,
             => {},
             .identifier => |i| {
                 std.debug.assert(scope != NO_SCOPE);
