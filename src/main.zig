@@ -1,8 +1,8 @@
 const std = @import("std");
 
-var source_files = std.ArrayListUnmanaged(SourceFile){};
-var tokens = std.ArrayListUnmanaged(Token){};
-var expressions = std.ArrayListUnmanaged(Expression){};
+var source_files = std.SegmentedList(SourceFile, 1024){};
+var tokens = std.SegmentedList(Token, 32 * 1024){};
+var expressions = std.SegmentedList(Expression, 32 * 1024){};
 
 var gpa = std.heap.GeneralPurposeAllocator(.{}){
     .backing_allocator = std.heap.page_allocator
@@ -31,9 +31,14 @@ fn open_file(dir: std.fs.Dir, path: [:0]const u8, bound: ?SourceBound) !u32 {
         return err;
     };
 
-    for(source_files.items, 0..) |sf, idx| {
-        if(std.mem.eql(u8, std.mem.span(sf.realpath), rp)) {
-            return @intCast(u32, idx);
+    {
+        var result: u32 = 0;
+        var it = source_files.iterator(0);
+        while(it.next()) |sf| {
+            if(std.mem.eql(u8, std.mem.span(sf.realpath), rp)) {
+                return result;
+            }
+            result += 1;
         }
     }
 
@@ -58,12 +63,12 @@ fn open_file(dir: std.fs.Dir, path: [:0]const u8, bound: ?SourceBound) !u32 {
         .tokens = null,
     });
 
-    return @intCast(u32, source_files.items.len - 1);
+    return @intCast(u32, source_files.count() - 1);
 }
 
 fn add_expr(expr: ExpressionValue) u32 {
     expressions.append(alloc, .{.value = expr}) catch unreachable;
-    return @intCast(u32, expressions.items.len - 1);
+    return @intCast(u32, expressions.count() - 1);
 }
 
 const SourceLocation = struct {
@@ -74,7 +79,7 @@ const SourceLocation = struct {
 
     fn prev(self: @This()) ?SourceLocation {
         if(self.offset == 0) return null;
-        const up_line = source_files.items[self.source_file].buffer[self.offset - 1] == '\n';
+        const up_line = source_files.at(self.source_file).buffer[self.offset - 1] == '\n';
         return .{
             .source_file = self.source_file,
             .line = if(up_line) self.line - 1 else self.line,
@@ -89,7 +94,7 @@ const SourceBound = struct {
     end: u32,
 
     fn combine(self: @This(), other: @This()) @This() {
-        std.debug.assert(tokens.items[self.begin].loc.source_file == tokens.items[self.begin].loc.source_file);
+        std.debug.assert(tokens.at(self.begin).loc.source_file == tokens.at(self.begin).loc.source_file);
         if(self.begin < other.begin) {
             return .{
                 .begin = self.begin,
@@ -113,7 +118,7 @@ const SourceBound = struct {
 
     fn peek_token(self: *@This()) ?Token {
         if(self.begin > self.end) return null;
-        return tokens.items[self.begin];
+        return tokens.at(self.begin).*;
     }
 
     fn extend_right(self: @This(), num: u32) @This() {
@@ -158,7 +163,7 @@ const Token = struct {
             .multi_string_end => 0,
             else => {
                 var stream = Stream{
-                    .buffer = source_files.items[self.loc.source_file].buffer,
+                    .buffer = source_files.at(self.loc.source_file).buffer,
                     .pos = self.loc,
                 };
                 stream.states.appendAssumeCapacity(switch(self.value) {
@@ -174,14 +179,14 @@ const Token = struct {
 
     fn identifier_string(self: @This()) ![]const u8 {
         if(self.value != .identifier) return error.NotString;
-        const sf = source_files.items[self.loc.source_file];
+        const sf = source_files.at(self.loc.source_file);
         return sf.buffer[self.loc.offset..][0..self.length()];
     }
 
     fn append_string_value(self: @This(), str: *std.ArrayListUnmanaged(u8)) void {
         var offset: usize = self.loc.offset;
         var end = offset + self.length();
-        const buf = source_files.items[self.loc.source_file].buffer;
+        const buf = source_files.at(self.loc.source_file).buffer;
 
         switch(self.value) {
             .plain_string_chunk => {
@@ -237,8 +242,8 @@ fn message_impl(
 ) void {
     std.debug.print(message ++ " in ", fmtargs);
     if(bound) |b| {
-        const btok = tokens.items[b.begin];
-        const sf = source_files.items[btok.loc.source_file];
+        const btok = tokens.at(b.begin);
+        const sf = source_files.at(btok.loc.source_file);
         std.debug.print("{s}:{d}:{d}:\n", .{
             sf.realpath,
             btok.loc.line,
@@ -318,7 +323,7 @@ const Stream = struct {
             .value = .bad_char,
             .loc = self.pos.prev().?,
         });
-        const faketok = @intCast(u32, tokens.items.len - 1);
+        const faketok = @intCast(u32, tokens.count() - 1);
         report_error(
             .{.begin = faketok, .end = faketok},
             "Unexpected character: {c} (0x{X}){s}",
@@ -472,10 +477,10 @@ const Stream = struct {
 };
 
 fn tokenize_file(source_file: u32) !SourceBound {
-    const begin = @intCast(u32, tokens.items.len);
+    const begin = @intCast(u32, tokens.count());
 
     var stream = Stream {
-        .buffer = source_files.items[source_file].buffer,
+        .buffer = source_files.at(source_file).buffer,
         .pos = .{
             .source_file = source_file,
             .line = 1,
@@ -491,7 +496,7 @@ fn tokenize_file(source_file: u32) !SourceBound {
 
     return .{
         .begin = begin,
-        .end = @intCast(u32, tokens.items.len - 1),
+        .end = @intCast(u32, tokens.count() - 1),
     };
 }
 
@@ -499,17 +504,17 @@ fn parse_dict(tok: *SourceBound, scope: u32) !u32 {
     const new_scope = add_expr(.{.dict = .{.parent = scope}});
     while(true) {
         const ident = tok.consume_token() orelse return new_scope;
-        switch(tokens.items[ident].value) {
+        switch(tokens.at(ident).value) {
             .rcurly => return new_scope,
             .identifier => {
-                const s = tokens.items[ident].identifier_string() catch unreachable;
+                const s = tokens.at(ident).identifier_string() catch unreachable;
                 const ass = tok.consume_token().?;
-                if(tokens.items[ass].value != .eql) {
+                if(tokens.at(ass).value != .eql) {
                     report_error(token_bound(ass), "Expected '=' after identifier", .{});
                     return error.BadToken;
                 } else {
                     const expr = try parse_expr(tok, new_scope);
-                    try expressions.items[new_scope].value.dict.values.putNoClobber(alloc, s, expr);
+                    try expressions.at(new_scope).value.dict.values.putNoClobber(alloc, s, expr);
                 }
             },
             else => |o| {
@@ -529,7 +534,7 @@ fn parse_expr(tok: *SourceBound, scope: u32) anyerror!u32 {
         );
         return error.UnexpectedEOF;
     };
-    var lhs = switch(tokens.items[primary_expr].value) {
+    var lhs = switch(tokens.at(primary_expr).value) {
         .lparen => { // Function
             @panic("TODO: Function");
         },
@@ -572,7 +577,7 @@ fn parse_expr(tok: *SourceBound, scope: u32) anyerror!u32 {
             .dot => {
                 _ = tok.consume_token();
                 const ident = tok.consume_token().?;
-                if(tokens.items[ident].value != .identifier) {
+                if(tokens.at(ident).value != .identifier) {
                     report_error(
                         token_bound(ident),
                         "Expected identifier after '.' expression",
@@ -612,7 +617,7 @@ const Scope = struct {
             if(self.parent == NO_SCOPE) {
                 return null;
             } else {
-                return @call(.always_tail, expressions.items[self.parent].value.dict.lookup, .{name});
+                return @call(.always_tail, expressions.at(self.parent).value.dict.lookup, .{name});
             }
         }
     }
@@ -680,11 +685,11 @@ const Expression = struct {
     resolved: bool = false,
 
     fn make_alias(self: *@This(), dict: u32, value: u32) !void {
-        try expressions.items[value].resolve(dict);
+        try expressions.at(value).resolve(dict);
         const b = self.bound();
         self.value = .{.alias = .{
             .orig_bound = b,
-            .expr_value = switch(expressions.items[value].value) {
+            .expr_value = switch(expressions.at(value).value) {
                 .alias => |a| a.expr_value,
                 else => value,
             }},
@@ -693,7 +698,7 @@ const Expression = struct {
 
     fn dealias(self: @This()) @This() {
         switch(self.value) {
-            .alias => |a| return expressions.items[a.expr_value],
+            .alias => |a| return expressions.at(a.expr_value).*,
             else => return self,
         }
     }
@@ -750,8 +755,8 @@ const Expression = struct {
             => {},
             .identifier => |i| {
                 std.debug.assert(scope != NO_SCOPE);
-                const is = tokens.items[i].identifier_string() catch unreachable;
-                return try self.make_alias(scope, expressions.items[scope].dealias().value.dict.lookup(is) orelse {
+                const is = tokens.at(i).identifier_string() catch unreachable;
+                return try self.make_alias(scope, expressions.at(scope).dealias().value.dict.lookup(is) orelse {
                     report_error(token_bound(i), "Identifier '{s}' not found!", .{is});
                     return error.BadIdentifier;
                 });
@@ -760,30 +765,30 @@ const Expression = struct {
                 @panic("TODO: Override");
             },
             .source_file => |sf| {
-                if(source_files.items[sf.file].tokens == null) {
-                    source_files.items[sf.file].tokens = try tokenize_file(sf.file);
+                if(source_files.at(sf.file).tokens == null) {
+                    source_files.at(sf.file).tokens = try tokenize_file(sf.file);
                 }
-                if(source_files.items[sf.file].top_level_value == NO_SCOPE) {
-                    var toks = source_files.items[sf.file].tokens.?;
+                if(source_files.at(sf.file).top_level_value == NO_SCOPE) {
+                    var toks = source_files.at(sf.file).tokens.?;
                     // while(toks.consume_token()) |tok| {
-                    //     std.debug.print("Token tag: {s}\n", .{@tagName(tokens.items[tok].value)});
+                    //     std.debug.print("Token tag: {s}\n", .{@tagName(tokens.at(tok).value)});
                     // }
-                    source_files.items[sf.file].top_level_value = try parse_dict(&toks, NO_SCOPE);
+                    source_files.at(sf.file).top_level_value = try parse_dict(&toks, NO_SCOPE);
                 }
-                try self.make_alias(NO_SCOPE, source_files.items[sf.file].top_level_value);
+                try self.make_alias(NO_SCOPE, source_files.at(sf.file).top_level_value);
             },
             .list => |l| {
                 for(l) |expr| {
-                    try expressions.items[expr].resolve(scope);
+                    try expressions.at(expr).resolve(scope);
                 }
             },
             .call => |_| {
                 @panic("TODO: Call");
             },
             .member_access => |ma| {
-                try expressions.items[ma.src].resolve(scope);
-                const str = tokens.items[ma.ident].identifier_string() catch unreachable;
-                try self.make_alias(ma.src, try expressions.items[ma.src].dealias().lookup(str) orelse {
+                try expressions.at(ma.src).resolve(scope);
+                const str = tokens.at(ma.ident).identifier_string() catch unreachable;
+                try self.make_alias(ma.src, try expressions.at(ma.src).dealias().lookup(str) orelse {
                     report_error(
                         token_bound(ma.ident),
                         "Key '{s}' not found in dict",
@@ -796,22 +801,22 @@ const Expression = struct {
                 for(sp) |part| {
                     switch(part) {
                         .expression_chunk => |e|{
-                            try expressions.items[e].resolve(scope);
+                            try expressions.at(e).resolve(scope);
                         },
                         else => {},
                     }
                 }
             },
             .subscript => |ss| {
-                try expressions.items[ss.idx].resolve(scope);
+                try expressions.at(ss.idx).resolve(scope);
                 var str = std.ArrayListUnmanaged(u8){};
                 defer str.deinit(alloc);
-                try expressions.items[ss.idx].dealias().append_string_value(&str);
+                try expressions.at(ss.idx).dealias().append_string_value(&str);
 
-                try expressions.items[ss.src].resolve(scope);
-                try self.make_alias(ss.src, try expressions.items[ss.src].dealias().lookup(str.items) orelse {
+                try expressions.at(ss.src).resolve(scope);
+                try self.make_alias(ss.src, try expressions.at(ss.src).dealias().lookup(str.items) orelse {
                     report_error(
-                        expressions.items[ss.idx].bound(),
+                        expressions.at(ss.idx).bound(),
                         "Key '{s}' not found in dict",
                         .{str.items},
                     );
@@ -830,10 +835,10 @@ const Expression = struct {
                 for(sp) |item| {
                     switch(item) {
                         .string_chunk => |sc| {
-                            tokens.items[sc].append_string_value(str);
+                            tokens.at(sc).append_string_value(str);
                         },
                         .expression_chunk => |ec| {
-                            expressions.items[ec].append_string_value(str) catch unreachable;
+                            expressions.at(ec).append_string_value(str) catch unreachable;
                         },
                     }
                 }
@@ -855,12 +860,12 @@ const Expression = struct {
             .function, .dict, .list, .string_parts, .call,
             => unreachable,
 
-            .member_access => |ma| return expressions.items[ma.src].bound().combine(token_bound(ma.ident)),
+            .member_access => |ma| return expressions.at(ma.src).bound().combine(token_bound(ma.ident)),
 
-            .override => |o| expressions.items[o.lhs].bound().combine(expressions.items[o.rhs].bound()),
+            .override => |o| expressions.at(o.lhs).bound().combine(expressions.at(o.rhs).bound()),
 
-            .subscript => |ss| expressions.items[ss.src].bound().combine(
-                expressions.items[ss.idx].bound().extend_right(1),
+            .subscript => |ss| expressions.at(ss.src).bound().combine(
+                expressions.at(ss.idx).bound().extend_right(1),
             ),
 
             .source_file => |sf| sf.bound,
@@ -874,10 +879,6 @@ const Expression = struct {
 };
 
 pub fn main() !void {
-    try tokens.ensureTotalCapacity(alloc, 8 * 1024 * 1024);
-    try expressions.ensureTotalCapacity(alloc, 8 * 1024 * 1024);
-    try source_files.ensureTotalCapacity(alloc, 1024 * 1024);
-
     var it = std.process.args();
 
     var positional_args = std.BoundedArray([:0]const u8, 3){};
@@ -902,7 +903,7 @@ pub fn main() !void {
             .end = 0,
         },
     }});
-    try expressions.items[root_expr].resolve(NO_SCOPE);
+    try expressions.at(root_expr).resolve(NO_SCOPE);
 
     // Ugly hack to parse cmdline as expression
     try source_files.append(alloc, .{
@@ -912,9 +913,9 @@ pub fn main() !void {
         .top_level_value = NO_SCOPE,
         .tokens = null,
     });
-    var cmdline_tokens = try tokenize_file(@intCast(u32, source_files.items.len - 1));
+    var cmdline_tokens = try tokenize_file(@intCast(u32, source_files.count() - 1));
     const cmdline_expr = try parse_expr(&cmdline_tokens, root_expr);
-    try expressions.items[cmdline_expr].resolve(root_expr);
-    const result = try expressions.items[cmdline_expr].to_string();
+    try expressions.at(cmdline_expr).resolve(root_expr);
+    const result = try expressions.at(cmdline_expr).to_string();
     std.debug.print("{s}\n",.{result});
 }
