@@ -514,6 +514,7 @@ fn tokenize_file(source_file: u32) !SourceBound {
     stream.states.appendAssumeCapacity(.{.normal = 0});
 
     while(try stream.generate_token()) |tok| {
+        //std.debug.print("Token: {any}\n", .{tok});
         tokens.append(alloc, tok) catch unreachable;
     }
 
@@ -874,9 +875,6 @@ const Expression = struct {
                 }
                 if(source_files.at(sf.file).top_level_value == NO_SCOPE) {
                     var toks = source_files.at(sf.file).tokens.?;
-                    // while(toks.consume_token()) |tok| {
-                    //     std.debug.print("Token tag: {s}\n", .{@tagName(tokens.at(tok).value)});
-                    // }
                     source_files.at(sf.file).top_level_value = try parse_dict(&toks, NO_SCOPE);
                 }
                 try self.make_alias(NO_SCOPE, source_files.at(sf.file).top_level_value);
