@@ -10,6 +10,7 @@ var gpa = std.heap.GeneralPurposeAllocator(.{}){
 const alloc = gpa.allocator();
 
 const NO_SCOPE = 0xFFFFFFFF;
+const NO_ARG_VALUE = 0xFFFFFFFF;
 
 var host_path: ?[]const u8 = null;
 var host_string_expr: ?u32 = null;
@@ -535,8 +536,39 @@ fn parse_expr(tok: *SourceBound, scope: u32) anyerror!u32 {
         return error.UnexpectedEOF;
     };
     var lhs = switch(tokens.at(primary_expr).value) {
-        .lparen => { // Function
-            @panic("TODO: Function");
+        .lparen => blk: { // Function
+            var argument_template = std.StringHashMapUnmanaged(u32){};
+            while(tok.peek_token().?.value != .rparen) {
+                const ident = tok.consume_token().?;
+                if(tokens.at(ident).value != .identifier) {
+                    report_error(
+                        token_bound(ident),
+                        "Expected argument name identifier",
+                        .{},
+                    );
+                    return error.BadToken;
+                }
+                try argument_template.putNoClobber(
+                    alloc,
+                    tokens.at(ident).identifier_string() catch unreachable,
+                    NO_ARG_VALUE
+                );
+                if(tok.peek_token().?.value == .comma) {
+                    _ = tok.consume_token();
+                } else {
+                    break;
+                }
+            }
+            std.debug.assert(tokens.at(tok.consume_token().?).value == .rparen);
+            const f = add_expr(.{.function = .{
+                .argument_template = .{
+                    .values = argument_template,
+                    .parent = scope,
+                },
+                .body = undefined,
+            }});
+            expressions.at(f).value.function.body = try parse_expr(tok, f);
+            break :blk f;
         },
         .lcurly => try parse_dict(tok, scope),
         .lsquare => { // List
@@ -591,7 +623,46 @@ fn parse_expr(tok: *SourceBound, scope: u32) anyerror!u32 {
                 }});
                 lhs = new;
             },
-            .lparen => @panic("TODO: Function call"),
+            .lparen => {
+                var result = std.StringHashMapUnmanaged(u32){};
+                _ = tok.consume_token();
+                while(tok.peek_token().?.value != .rparen) {
+                    const ident = tok.consume_token().?;
+                    if(tokens.at(ident).value != .identifier) {
+                        report_error(
+                            token_bound(ident),
+                            "Expected argument name identifier",
+                            .{},
+                        );
+                        return error.BadToken;
+                    }
+                    const ass = tok.consume_token().?;
+                    if(tokens.at(ass).value != .eql) {
+                        report_error(
+                            token_bound(ass),
+                            "Expected '=' after argument name",
+                            .{},
+                        );
+                        return error.BadToken;
+                    }
+                    const expr = try parse_expr(tok, scope);
+                    try result.putNoClobber(
+                        alloc,
+                        tokens.at(ident).identifier_string() catch unreachable,
+                        expr
+                    );
+                    if(tok.peek_token().?.value == .comma) {
+                        _ = tok.consume_token();
+                    } else {
+                        break;
+                    }
+                }
+                std.debug.assert(tokens.at(tok.consume_token().?).value == .rparen);
+                lhs = add_expr(.{.call = .{
+                    .callee = lhs,
+                    .args = result,
+                }});
+            },
             .lsquare => @panic("TODO: Subscript"),
 
             .identifier,
