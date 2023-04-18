@@ -279,6 +279,7 @@ const Stream = struct {
         normal: usize,
         plain_string,
         multi_string,
+        multi_string_end,
     };
 
     buffer: [*:0]const u8,
@@ -378,41 +379,54 @@ const Stream = struct {
                 }
             },
             .multi_string => {
-                var active = true;
+                var length: usize = 0;
                 while(true) {
-                    if(active) {
-                        switch(self.consume()) {
-                            0 => {
-                                self.states.len = 1;
+                    switch(self.consume()) {
+                        0 => {
+                            if(length == 0) {
+                                _ = self.states.pop();
+                                break :value .multi_string_end;
+                            } else {
                                 break :value .multi_string_chunk;
-                            },
-                            '\\' => {
-                                @panic("TODO: String escapes");
-                            },
-                            '\n' => active = false,
-                            '$' => {
-                                if(self.peek() == '{') {
-                                    _ = self.consume();
-                                    try self.states.append(.{.normal = 0});
+                            }
+                        },
+                        '\\' => {
+                            @panic("TODO: String escapes");
+                        },
+                        '\n' => {
+                            length += 1;
+                            const potential_end = self.pos;
+                            self.skip_whitespace();
+                            if(self.peek() == '\\') {
+                                _ = self.consume();
+                            } else {
+                                self.pos = potential_end;
+                                self.current_state().* = .multi_string_end;
+                                break :value .multi_string_chunk;
+                            }
+                        },
+                        '$' => {
+                            if(self.peek() == '{') {
+                                _ = self.consume();
+                                try self.states.append(.{.normal = 0});
+                                if(length == 0) {
+                                    return @call(.always_tail, generate_token, .{self});
+                                } else {
                                     break :value .multi_string_chunk;
                                 }
-                            },
-                            else => { },
-                        }
-                    } else {
-                        const potential_end = self.pos;
-                        self.skip_whitespace();
-                        if(self.peek() == '\\') {
-                            _ = self.consume();
-                            active = true;
-                            continue;
-                        } else {
-                            self.pos = potential_end;
-                            _ = self.states.pop();
-                            break :value .multi_string_end;
-                        }
+                            } else {
+                                length += 1;
+                            }
+                        },
+                        else => {
+                            length += 1;
+                        },
                     }
                 }
+            },
+            .multi_string_end => {
+                _ = self.states.pop();
+                break :value .multi_string_end;
             },
             .normal => |*depth| {
                 self.skip_whitespace();
