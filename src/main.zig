@@ -836,6 +836,67 @@ const Expression = struct {
         return result.toOwnedSlice(alloc);
     }
 
+    fn deep_copy_value(value: u32) !ExpressionValue {
+        switch(expressions.at(value).value) {
+            .dict => |d| return .{.dict = .{
+                .values = try d.values.clone(alloc),
+                .parent = d.parent,
+            }},
+            .function => |f| return .{.function = .{
+                // We don't need to deep copy the argument dicts because they are deep
+                // copied before they are modified, during the call anyways
+                .argument_template = f.argument_template,
+                .body = add_expr(try deep_copy_value(f.body)),
+            }},
+            .list => |l| {
+                const result = try alloc.dupe(u32, l);
+                for(result) |*v| {
+                    v.* = add_expr(try deep_copy_value(v.*));
+                }
+                return .{.list = result};
+            },
+            .string_parts => |sp| {
+                const result = try alloc.dupe(ExpressionValue.StringPart, sp);
+                for(result) |*v| {
+                    switch(v.*) {
+                        .expression_chunk => |*ec| ec.* = add_expr(try deep_copy_value(ec.*)),
+                        else => { },
+                    }
+                }
+                return .{.string_parts = result};
+            },
+            .call => |c| {
+                var result = c;
+                result.callee = add_expr(try deep_copy_value(result.callee));
+                result.args = try result.args.clone(alloc);
+                var it = result.args.iterator();
+                while(it.next()) |a| {
+                    a.value_ptr.* = add_expr(try deep_copy_value(a.value_ptr.*));
+                }
+                return .{.call = result};
+            },
+            .member_access => |ma| return .{.member_access = .{
+                .src = add_expr(try deep_copy_value(ma.src)),
+                .ident = ma.ident,
+            }},
+            .subscript => |ss| return .{.subscript = .{
+                .src = add_expr(try deep_copy_value(ss.src)),
+                .idx = add_expr(try deep_copy_value(ss.idx)),
+            }},
+            .override => |o| return .{.override = .{
+                .lhs = add_expr(try deep_copy_value(o.lhs)),
+                .rhs = add_expr(try deep_copy_value(o.rhs)),
+            }},
+            .source_file => |sf| return .{.source_file = sf},
+            .identifier => |i| return .{.identifier = i},
+            .string => |s| return .{.string = s},
+            .host => |h| return .{.host = h},
+            .host_string_underlying => |hu| return .{.host_string_underlying = hu},
+
+            .alias => |_| unreachable, // Expressions should not be resolved to aliases yet
+        }
+    }
+
     fn resolve(self: *@This(), scope: u32) anyerror!void {
         if(self.resolved) return;
         if(self.resolving) {
@@ -889,8 +950,62 @@ const Expression = struct {
                     try expressions.at(expr).resolve(scope);
                 }
             },
-            .call => |_| {
-                @panic("TODO: Call");
+            .call => |c| {
+                try expressions.at(c.callee).resolve(scope);
+                switch(expressions.at(c.callee).dealias().value) {
+                    .function => |f| {
+                        var args = f.argument_template;
+                        args.values = try args.values.clone(alloc);
+
+                        {
+                            var it = c.args.iterator();
+                            while(it.next()) |a| {
+                                try expressions.at(a.value_ptr.*).resolve(scope);
+                                if((try args.values.fetchPut(alloc, a.key_ptr.*, a.value_ptr.*) orelse {
+                                    report_error(
+                                        expressions.at(a.value_ptr.*).bound(),
+                                        "Unknown argument {s}",
+                                        .{a.key_ptr.*},
+                                    );
+                                    return error.BadKey;
+                                }).value != NO_ARG_VALUE) {
+                                    report_error(
+                                        expressions.at(a.value_ptr.*).bound(),
+                                        "Argument {s} supplied twice",
+                                        .{a.key_ptr.*},
+                                    );
+                                    return error.BadKey;
+                                }
+                            }
+                        }
+                        {
+                            var it = args.values.iterator();
+                            while(it.next()) |a| {
+                                if(a.value_ptr.* == NO_ARG_VALUE) {
+                                    report_error(
+                                        self.bound(),
+                                        "Missing argument {s}",
+                                        .{a.key_ptr.*},
+                                    );
+                                    return error.MissingArgument;
+                                }
+                            }
+                        }
+
+                        const new_scope = add_expr(.{.dict = args});
+                        self.value = try deep_copy_value(f.body);
+                        self.resolving = false;
+                        return @call(.always_tail, resolve, .{self, new_scope});
+                    },
+                    else => {
+                        report_error(
+                            self.bound(),
+                            "Expected function",
+                            .{},
+                        );
+                        return error.BadValue;
+                    }
+                }
             },
             .member_access => |ma| {
                 try expressions.at(ma.src).resolve(scope);
