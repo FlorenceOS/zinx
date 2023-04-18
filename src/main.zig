@@ -585,8 +585,19 @@ fn parse_expr(tok: *SourceBound, scope: u32) anyerror!u32 {
             break :blk f;
         },
         .lcurly => try parse_dict(tok, scope),
-        .lsquare => { // List
-            @panic("TODO: List");
+        .lsquare => blk: { // List
+            var result = std.ArrayListUnmanaged(u32){};
+            while(tok.peek_token().?.value != .rsquare) {
+                const expr = try parse_expr(tok, scope);
+                try result.append(alloc, expr);
+                if(tok.peek_token().?.value == .comma) {
+                    _ = tok.consume_token();
+                } else {
+                    break;
+                }
+            }
+            std.debug.assert(tokens.at(tok.consume_token().?).value == .rsquare);
+            break :blk add_expr(.{.list = try result.toOwnedSlice(alloc)});
         },
         .plain_string_start, .multi_string_start => blk: {
             var string_parts: std.ArrayListUnmanaged(ExpressionValue.StringPart) = .{};
