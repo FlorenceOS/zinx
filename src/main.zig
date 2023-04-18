@@ -862,6 +862,10 @@ const Expression = struct {
             .identifier => |i| {
                 std.debug.assert(scope != NO_SCOPE);
                 const is = tokens.at(i).identifier_string() catch unreachable;
+                if(std.mem.eql(u8, is, "@host")) {
+                    self.value = .{.host = self.bound()};
+                    return;
+                }
                 return try self.make_alias(scope, expressions.at(scope).dealias().value.dict.lookup(is) orelse {
                     report_error(token_bound(i), "Identifier '{s}' not found!", .{is});
                     return error.BadIdentifier;
