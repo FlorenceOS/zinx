@@ -735,7 +735,6 @@ const ExpressionValue = union(enum) {
     };
 
     // Needs no resolution
-    invalid,
     function: struct {
         // All map values must have an invalid expression
         // Can be cloned when doing a function call with the correct values
@@ -855,7 +854,6 @@ const Expression = struct {
         }
 
         switch(self.value) {
-            .invalid => unreachable,
             .dict, .function, .string, .alias, .host, .host_string_underlying,
             => {},
             .identifier => |i| {
@@ -958,7 +956,7 @@ const Expression = struct {
 
     fn bound(self: @This()) SourceBound {
         return switch(self.value) {
-            .invalid, .host_string_underlying,
+            .host_string_underlying,
             .function, .dict, .list, .string_parts, .call,
             => unreachable,
 
