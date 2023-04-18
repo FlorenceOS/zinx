@@ -315,6 +315,14 @@ const Stream = struct {
                 ' ', '\t', '\r', '\n' => {
                     _ = self.consume();
                 },
+                '/' => {
+                    while(true) {
+                        switch(self.consume()) {
+                            '\n' => break,
+                            else => { },
+                        }
+                    }
+                },
                 else => return,
             }
         }
