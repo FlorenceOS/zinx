@@ -719,7 +719,16 @@ const Scope = struct {
             if(self.parent == NO_SCOPE) {
                 return null;
             } else {
-                return @call(.always_tail, expressions.at(self.parent).value.dict.lookup, .{name});
+                var parent = expressions.at(self.parent);
+                if(parent.value == .alias) {
+                    parent = expressions.at(parent.value.alias.expr_value);
+                }
+
+                switch (parent.value) {
+                    .dict => |scope| return @call(.always_tail, scope.lookup, .{name}),
+                    .function => |func| return @call(.always_tail, func.argument_template.lookup, .{name}),
+                    inline else => |_, tag| @panic("Invalid scope parent: " ++ @tagName(tag)),
+                }
             }
         }
     }
