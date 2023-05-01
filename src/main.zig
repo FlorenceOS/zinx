@@ -589,6 +589,7 @@ fn parse_expr(tok: *SourceBound) anyerror!u32 {
         .lcurly => try parse_dict(tok),
         .lsquare => blk: { // List
             var result = std.ArrayListUnmanaged(u32){};
+            var lsquare_bound = tok.*;
             while(tok.peek_token().?.value != .rsquare) {
                 const expr = try parse_expr(tok);
                 try result.append(alloc, expr);
@@ -599,7 +600,10 @@ fn parse_expr(tok: *SourceBound) anyerror!u32 {
                 }
             }
             std.debug.assert(tokens.at(tok.consume_token().?).value == .rsquare);
-            break :blk add_expr(.{.list = try result.toOwnedSlice(alloc)});
+            break :blk add_expr(.{.list = .{
+                .lsquare_bound = lsquare_bound,
+                .items = try result.toOwnedSlice(alloc),
+            }});
         },
         .plain_string_start, .multi_string_start => blk: {
             var string_parts: std.ArrayListUnmanaged(ExpressionValue.StringPart) = .{};
@@ -749,7 +753,11 @@ const ExpressionValue = union(enum) {
     dict: Scope,
 
     // Needs to resolve child expressions
-    list: []const u32,
+    list: struct {
+        lsquare_bound: SourceBound,
+        items: []const u32,
+    },
+
     string_parts: []const StringPart,
 
     // Unresolved values, has to be a value above after resolution
@@ -842,11 +850,11 @@ const Expression = struct {
                 .body = add_expr(try deep_copy_value(f.body)),
             }},
             .list => |l| {
-                const result = try alloc.dupe(u32, l);
+                const result = try alloc.dupe(u32, l.items);
                 for(result) |*v| {
                     v.* = add_expr(try deep_copy_value(v.*));
                 }
-                return .{.list = result};
+                return .{.list = .{.lsquare_bound = l.lsquare_bound, .items = result}};
             },
             .string_parts => |sp| {
                 const result = try alloc.dupe(ExpressionValue.StringPart, sp);
@@ -938,7 +946,7 @@ const Expression = struct {
                 try self.make_alias(NO_SCOPE, source_files.at(sf.file).top_level_value);
             },
             .list => |l| {
-                for(l) |expr| {
+                for(l.items) |expr| {
                     try expressions.at(expr).resolve(scope);
                 }
             },
@@ -1073,11 +1081,61 @@ const Expression = struct {
 
     fn bound(self: @This()) SourceBound {
         return switch(self.value) {
-            .host_string_underlying,
-            .function, .dict, .list, .string_parts, .call,
-            => unreachable,
+            .host_string_underlying => unreachable,
+
+            .string_parts => |sp| {
+                var result = @as(?SourceBound, null);
+                for(sp) |part| {
+                    var part_bound = @as(SourceBound, undefined);
+                    switch(part) {
+                        .string_chunk => |sc| part_bound = token_bound(sc),
+                        .expression_chunk => |ec| part_bound = expressions.at(ec).bound(),
+                    }
+                    if(result) |res| {
+                        result = res.combine(part_bound);
+                    } else {
+                        result = part_bound;
+                    }
+                }
+                return result.?;
+            },
 
             .member_access => |ma| return expressions.at(ma.src).bound().combine(token_bound(ma.ident)),
+
+            .list => |l| {
+                var result = l.lsquare_bound;
+                for(l.items) |item| {
+                    result = result.combine(expressions.at(item).bound());
+                }
+                return result.extend_right(1);
+            },
+
+            .call => |fc| {
+                var result = expressions.at(fc.callee).bound();
+                var iter = fc.args.valueIterator();
+                while(iter.next()) |arg| {
+                    result = result.combine(expressions.at(arg.*).bound());
+                }
+                if(result.peek_token()) |token| {
+                    if(token.value == .comma) result = result.extend_right(1);
+                }
+                return result.extend_right(1);
+            },
+
+            .function => |func| return expressions.at(func.body).bound(),
+
+            .dict => |dict| {
+                var result = @as(?SourceBound, null);
+                var iter = dict.values.valueIterator();
+                while(iter.next()) |value| {
+                    if(result) |res| {
+                        result = res.combine(expressions.at(value.*).bound());
+                    } else {
+                        result = expressions.at(value.*).bound();
+                    }
+                }
+                return result.?;
+            },
 
             .override => |o| expressions.at(o.lhs).bound().combine(expressions.at(o.rhs).bound()),
 
