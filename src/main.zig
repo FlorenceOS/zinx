@@ -95,18 +95,11 @@ const SourceBound = struct {
     end: u32,
 
     fn combine(self: @This(), other: @This()) @This() {
-        std.debug.assert(tokens.at(self.begin).loc.source_file == tokens.at(self.begin).loc.source_file);
-        if(self.begin < other.begin) {
-            return .{
-                .begin = self.begin,
-                .end = other.end,
-            };
-        } else {
-            return .{
-                .begin = other.begin,
-                .end = self.end,
-            };
-        }
+        std.debug.assert(tokens.at(self.begin).loc.source_file == tokens.at(other.begin).loc.source_file);
+        return .{
+            .begin = std.math.min(self.begin, other.begin),
+            .end = std.math.max(self.end, other.end),
+        };
     }
 
     fn consume_token(self: *@This()) ?u32 {
@@ -524,8 +517,8 @@ fn tokenize_file(source_file: u32) !SourceBound {
     };
 }
 
-fn parse_dict(tok: *SourceBound, scope: u32) !u32 {
-    const new_scope = add_expr(.{.dict = .{.parent = scope}});
+fn parse_dict(tok: *SourceBound) !u32 {
+    const new_scope = add_expr(.{.dict = .{.parent = undefined}});
     while(true) {
         const ident = tok.consume_token() orelse return new_scope;
         switch(tokens.at(ident).value) {
@@ -537,7 +530,7 @@ fn parse_dict(tok: *SourceBound, scope: u32) !u32 {
                     report_error(token_bound(ass), "Expected '=' after identifier", .{});
                     return error.BadToken;
                 } else {
-                    const expr = try parse_expr(tok, new_scope);
+                    const expr = try parse_expr(tok);
                     try expressions.at(new_scope).value.dict.values.putNoClobber(alloc, s, expr);
                 }
             },
@@ -549,7 +542,7 @@ fn parse_dict(tok: *SourceBound, scope: u32) !u32 {
     }
 }
 
-fn parse_expr(tok: *SourceBound, scope: u32) anyerror!u32 {
+fn parse_expr(tok: *SourceBound) anyerror!u32 {
     const primary_expr = tok.consume_token() orelse {
         report_error(
             null,
@@ -586,18 +579,18 @@ fn parse_expr(tok: *SourceBound, scope: u32) anyerror!u32 {
             const f = add_expr(.{.function = .{
                 .argument_template = .{
                     .values = argument_template,
-                    .parent = scope,
+                    .parent = undefined,
                 },
                 .body = undefined,
             }});
-            expressions.at(f).value.function.body = try parse_expr(tok, f);
+            expressions.at(f).value.function.body = try parse_expr(tok);
             break :blk f;
         },
-        .lcurly => try parse_dict(tok, scope),
+        .lcurly => try parse_dict(tok),
         .lsquare => blk: { // List
             var result = std.ArrayListUnmanaged(u32){};
             while(tok.peek_token().?.value != .rsquare) {
-                const expr = try parse_expr(tok, scope);
+                const expr = try parse_expr(tok);
                 try result.append(alloc, expr);
                 if(tok.peek_token().?.value == .comma) {
                     _ = tok.consume_token();
@@ -620,7 +613,7 @@ fn parse_expr(tok: *SourceBound, scope: u32) anyerror!u32 {
                         try string_parts.append(alloc, .{.string_chunk = tok.consume_token().?});
                     },
                     else => {
-                        try string_parts.append(alloc, .{.expression_chunk = try parse_expr(tok, scope)});
+                        try string_parts.append(alloc, .{.expression_chunk = try parse_expr(tok)});
                     },
                 }
             }
@@ -679,7 +672,7 @@ fn parse_expr(tok: *SourceBound, scope: u32) anyerror!u32 {
                         );
                         return error.BadToken;
                     }
-                    const expr = try parse_expr(tok, scope);
+                    const expr = try parse_expr(tok);
                     try result.putNoClobber(
                         alloc,
                         tokens.at(ident).identifier_string() catch unreachable,
@@ -915,10 +908,9 @@ const Expression = struct {
         }
 
         switch(self.value) {
-            .dict => |*s| {
-                s.parent = scope;
-            },
-            .function, .string, .alias, .host, .host_string_underlying,
+            .dict => |*s| s.parent = scope,
+            .function => |*f| f.argument_template.parent = scope,
+            .string, .alias, .host, .host_string_underlying,
             => {},
             .identifier => |i| {
                 std.debug.assert(scope != NO_SCOPE);
@@ -941,7 +933,7 @@ const Expression = struct {
                 }
                 if(source_files.at(sf.file).top_level_value == NO_SCOPE) {
                     var toks = source_files.at(sf.file).tokens.?;
-                    source_files.at(sf.file).top_level_value = try parse_dict(&toks, NO_SCOPE);
+                    source_files.at(sf.file).top_level_value = try parse_dict(&toks);
                 }
                 try self.make_alias(NO_SCOPE, source_files.at(sf.file).top_level_value);
             },
@@ -1139,7 +1131,7 @@ pub fn main() !void {
         .tokens = null,
     });
     var cmdline_tokens = try tokenize_file(@intCast(u32, source_files.count() - 1));
-    const cmdline_expr = try parse_expr(&cmdline_tokens, root_expr);
+    const cmdline_expr = try parse_expr(&cmdline_tokens);
     try expressions.at(cmdline_expr).resolve(root_expr);
     const result = try expressions.at(cmdline_expr).to_string();
     std.debug.print("{s}\n",.{result});
