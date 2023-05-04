@@ -212,7 +212,7 @@ const Token = struct {
                         }
                         offset += 1;
                     } else {
-                        offset = std.mem.indexOfPosLinear(u8, buf[0..end], offset, "\\\\") orelse return;
+                        offset = (std.mem.indexOfScalarPos(u8, buf[0..end], offset, '\\') orelse return) + 1;
                         active = true;
                     }
                 }
