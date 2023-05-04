@@ -756,6 +756,13 @@ const ExpressionValue = union(enum) {
         expr_value: u32,
     },
     host: SourceBound,
+    builtin_function: struct {
+        token: u32,
+        value: enum {
+            transform,
+            join,
+        },
+    },
     host_string_underlying,
 
     // Lazily resolves children upon member access
@@ -768,6 +775,17 @@ const ExpressionValue = union(enum) {
     },
 
     string_parts: []const StringPart,
+    transformed_list: struct {
+        orig_bound: SourceBound,
+        elements: u32,
+        transform: u32,
+    },
+    joined_string: struct {
+        orig_bound: SourceBound,
+        elements: u32,
+        separator: u32,
+        scope: u32,
+    },
 
     // Unresolved values, has to be a value above after resolution
     call: struct {
@@ -875,6 +893,8 @@ const Expression = struct {
                 }
                 return .{.string_parts = result};
             },
+            .transformed_list => unreachable,
+            .joined_string => unreachable,
             .call => |c| {
                 var result = c;
                 result.callee = add_expr(try deep_copy_value(result.callee));
@@ -901,6 +921,7 @@ const Expression = struct {
             .identifier => |i| return .{.identifier = i},
             .string => |s| return .{.string = s},
             .host => |h| return .{.host = h},
+            .builtin_function => |f| return .{.builtin_function = f},
             .host_string_underlying => |hu| return .{.host_string_underlying = hu},
 
             .alias => |_| unreachable, // Expressions should not be resolved to aliases yet
@@ -927,13 +948,19 @@ const Expression = struct {
         switch(self.value) {
             .dict => |*s| s.parent = scope,
             .function => |*f| f.argument_template.parent = scope,
-            .string, .alias, .host, .host_string_underlying,
+            .string, .alias, .host, .builtin_function, .host_string_underlying, .transformed_list, .joined_string,
             => {},
             .identifier => |i| {
                 std.debug.assert(scope != NO_SCOPE);
                 const is = tokens.at(i).identifier_string() catch unreachable;
                 if(std.mem.eql(u8, is, "@host")) {
                     self.value = .{.host = self.bound()};
+                    return;
+                } else if(std.mem.eql(u8, is, "@transform")) {
+                    self.value = .{.builtin_function = .{.token = i, .value = .transform}};
+                    return;
+                } else if(std.mem.eql(u8, is, "@join")) {
+                    self.value = .{.builtin_function = .{.token = i, .value = .join}};
                     return;
                 }
                 return try self.make_alias(scope, expressions.at(scope).dealias().value.dict.lookup(is) orelse {
@@ -1006,6 +1033,33 @@ const Expression = struct {
                         self.resolving = false;
                         return @call(.always_tail, resolve, .{self, new_scope});
                     },
+                    .builtin_function => |f| switch(f.value) {
+                        .transform => {
+                            std.debug.assert(c.args.size == 2);
+                            const elements = c.args.get("elements").?;
+                            const transform = c.args.get("transform").?;
+                            try expressions.at(elements).resolve(scope);
+                            try expressions.at(transform).resolve(scope);
+                            self.value = .{.transformed_list = .{
+                                .orig_bound = self.bound(),
+                                .elements = elements,
+                                .transform = transform,
+                            }};
+                        },
+                        .join => {
+                            std.debug.assert(c.args.size == 2);
+                            const separator = c.args.get("separator").?;
+                            const elements = c.args.get("elements").?;
+                            try expressions.at(elements).resolve(scope);
+                            try expressions.at(separator).resolve(scope);
+                            self.value = .{.joined_string = .{
+                                .orig_bound = self.bound(),
+                                .elements = elements,
+                                .separator = separator,
+                                .scope = scope,
+                            }};
+                        },
+                    },
                     else => {
                         report_error(
                             self.bound(),
@@ -1057,6 +1111,32 @@ const Expression = struct {
         }
     }
 
+    fn value_at_index(self: @This(), index: usize) !u32 {
+        switch(self.dealias().value) {
+            .list => |l| return l.items[index],
+            .transformed_list => |t| {
+                const element = try expressions.at(t.elements).dealias().value_at_index(index);
+                const transform = try deep_copy_value(t.transform);
+                const args = try transform.function.argument_template.values.clone(alloc);
+                var value_it = args.valueIterator();
+                value_it.next().?.* = element;
+                std.debug.assert(args.size == 1);
+                const new_scope = add_expr(.{.dict = .{.values = args, .parent = transform.function.argument_template.parent}});
+                try expressions.at(transform.function.body).resolve(new_scope);
+                return transform.function.body;
+            },
+            else => unreachable,
+        }
+    }
+
+    fn append_string_value_at_index(self: @This(), index: usize, str: *std.ArrayListUnmanaged(u8)) !void {
+        switch(self.dealias().value) {
+            .list => |l| expressions.at(l.items[index]).dealias().append_string_value(str),
+            .transformed_list => |t| expressions.at(try expressions.at(t.elements).value_at_index(index)).dealias().append_string_value(str),
+            else => unreachable,
+        }
+    }
+
     fn append_string_value(self: @This(), str: *std.ArrayListUnmanaged(u8)) !void {
         switch(self.dealias().value) {
             .string => |s| {
@@ -1076,6 +1156,30 @@ const Expression = struct {
             },
             .host_string_underlying => {
                 try str.appendSlice(alloc, host_path.?);
+            },
+            .joined_string => |j| {
+                const separator = expressions.at(j.separator).dealias();
+                try expressions.at(j.elements).resolve(j.scope);
+                switch(expressions.at(j.elements).dealias().value) {
+                    .list => |l| for(l.items, 0..) |item, i| {
+                        if(i > 0) try separator.append_string_value(str);
+                        try expressions.at(item).dealias().append_string_value(str);
+                    },
+                    .transformed_list => |t| {
+                        var current = t.elements;
+                        while(expressions.at(current).dealias().value == .transformed_list) {
+                            current = expressions.at(current).dealias().value.transformed_list.elements;
+                        }
+                        const transformed_list = expressions.at(j.elements).dealias();
+                        const list = expressions.at(current).dealias();
+                        std.debug.assert(list.value == .list);
+                        for(0..list.value.list.items.len) |i| {
+                            if(i > 0) try separator.append_string_value(str);
+                            try expressions.at(try transformed_list.value_at_index(i)).dealias().append_string_value(str);
+                        }
+                    },
+                    else => unreachable,
+                }
             },
             else => |o| {
                 report_error(
@@ -1108,6 +1212,9 @@ const Expression = struct {
                 }
                 return result.?;
             },
+
+            .transformed_list => |t| t.orig_bound,
+            .joined_string => |j| j.orig_bound,
 
             .member_access => |ma| return expressions.at(ma.src).bound().combine(token_bound(ma.ident)),
 
@@ -1156,6 +1263,7 @@ const Expression = struct {
 
             inline .string, .alias => |v| v.orig_bound,
             .host => |b| b,
+            .builtin_function => |f| token_bound(f.token),
             .identifier,
             => |t| token_bound(t),
         };
