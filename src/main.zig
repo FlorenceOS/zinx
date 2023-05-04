@@ -1091,6 +1091,7 @@ const Expression = struct {
                                             var argv = [_:null]?[*:0]const u8{"sh", "-"};
                                             var envp = [_:null]?[*:0]const u8{};
                                             try std.os.dup2(pipe[0], 0);
+                                            try std.os.dup2(2, 1);
                                             std.os.close(pipe[0]);
                                             std.os.close(pipe[1]);
                                             try std.os.fchdir(work_dir.fd);
@@ -1370,5 +1371,5 @@ pub fn main() !void {
     const cmdline_expr = try parse_expr(&cmdline_tokens);
     try expressions.at(cmdline_expr).resolve(root_expr);
     const result = try expressions.at(cmdline_expr).to_string();
-    std.debug.print("{s}\n",.{result});
+    try std.io.getStdOut().writer().print("{s}\n",.{result});
 }
