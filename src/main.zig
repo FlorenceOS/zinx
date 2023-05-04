@@ -1094,6 +1094,8 @@ const Expression = struct {
                                         },
                                         else => return mkdir_err,
                                     };
+                                    errdefer build_dir.?.deleteTree(hash_z) catch {};
+
                                     const work_dir = try build_dir.?.openDirZ(hash_z, .{}, false);
                                     const pipe = try std.os.pipe();
                                     switch(try std.os.fork()) {
@@ -1119,7 +1121,6 @@ const Expression = struct {
                                             if(exit_code == 0) {
                                                 try std.os.renameatZ(build_dir.?.fd, hash_z, store_dir.?.fd, hash_z);
                                             } else {
-                                                try build_dir.?.deleteTree(hash_z);
                                                 return error.CommandFailed;
                                             }
                                         },
