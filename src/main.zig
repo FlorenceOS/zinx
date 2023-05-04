@@ -15,6 +15,9 @@ const NO_ARG_VALUE = 0xFFFFFFFF;
 var host_path: ?[]const u8 = null;
 var host_string_expr: ?u32 = null;
 
+var build_dir: ?std.fs.Dir = null;
+var store_dir: ?std.fs.Dir = null;
+
 const SourceFile = struct {
     buffer: [:0]const u8,
     realpath: [*:0]const u8,
@@ -761,6 +764,7 @@ const ExpressionValue = union(enum) {
         value: enum {
             transform,
             join,
+            shell,
         },
     },
     host_string_underlying,
@@ -962,6 +966,9 @@ const Expression = struct {
                 } else if(std.mem.eql(u8, is, "@join")) {
                     self.value = .{.builtin_function = .{.token = i, .value = .join}};
                     return;
+                } else if(std.mem.eql(u8, is, "@shell")) {
+                    self.value = .{.builtin_function = .{.token = i, .value = .shell}};
+                    return;
                 }
                 return try self.make_alias(scope, expressions.at(scope).dealias().value.dict.lookup(is) orelse {
                     report_error(token_bound(i), "Identifier '{s}' not found!", .{is});
@@ -1058,6 +1065,58 @@ const Expression = struct {
                                 .separator = separator,
                                 .scope = scope,
                             }};
+                        },
+                        .shell => {
+                            std.debug.assert(c.args.size == 1);
+                            const command = expressions.at(c.args.get("cmd").?);
+                            try command.resolve(scope);
+                            const script = try command.to_string();
+                            var digest: [std.crypto.hash.Sha1.digest_length]u8 = undefined;
+                            std.crypto.hash.Sha1.hash(script, &digest, .{});
+                            var hash_buf: [std.crypto.hash.Sha1.digest_length * 2 + 1]u8 = undefined;
+                            const hash_z = try std.fmt.bufPrintZ(&hash_buf, "{s}", .{std.fmt.fmtSliceHexLower(&digest)});
+                            store_dir.?.accessZ(hash_z, .{}) catch |err| switch (err) {
+                                error.FileNotFound => {
+                                    build_dir.?.makeDirZ(hash_z) catch |mkdir_err| switch (mkdir_err) {
+                                        error.PathAlreadyExists => {
+                                            try build_dir.?.deleteTree(hash_z);
+                                            try build_dir.?.makeDirZ(hash_z);
+                                        },
+                                        else => return mkdir_err,
+                                    };
+                                    const work_dir = try build_dir.?.openDirZ(hash_z, .{}, false);
+                                    const pipe = try std.os.pipe();
+                                    switch(try std.os.fork()) {
+                                        0 => {
+                                            var argv = [_:null]?[*:0]const u8{"sh", "-"};
+                                            var envp = [_:null]?[*:0]const u8{};
+                                            try std.os.dup2(pipe[0], 0);
+                                            std.os.close(pipe[0]);
+                                            std.os.close(pipe[1]);
+                                            try std.os.fchdir(work_dir.fd);
+                                            return std.os.execveZ("/bin/sh", &argv, &envp);
+                                        },
+                                        else => |pid| {
+                                            var written: usize = 0;
+                                            while(written < script.len) {
+                                                written += try std.os.write(pipe[1], script[written..]);
+                                            }
+                                            std.os.close(pipe[1]);
+
+                                            const wait_result = std.os.waitpid(pid, 0);
+                                            const exit_code = (wait_result.status >> 8) & 0xff;
+                                            if(exit_code == 0) {
+                                                try std.os.renameatZ(build_dir.?.fd, hash_z, store_dir.?.fd, hash_z);
+                                            } else {
+                                                try build_dir.?.deleteTree(hash_z);
+                                                return error.CommandFailed;
+                                            }
+                                        },
+                                    }
+                                },
+                                else => return err,
+                            };
+                            self.value = .{.string = .{.orig_bound = self.bound(), .value = try store_dir.?.realpathAlloc(alloc, hash_z)}};
                         },
                     },
                     else => {
@@ -1279,7 +1338,9 @@ pub fn main() !void {
         if(std.mem.startsWith(u8, arg, "--host-dir=")) {
             host_path = arg[11..];
         } else if(std.mem.startsWith(u8, arg, "--build-dir=")) {
-            std.debug.print("Build dir is {s}\n", .{arg[12..]});
+            build_dir = try std.fs.cwd().openDirZ(arg[12..], .{}, false);
+        } else if(std.mem.startsWith(u8, arg, "--store-dir=")) {
+            store_dir = try std.fs.cwd().openDirZ(arg[12..], .{}, false);
         } else {
             try positional_args.append(arg);
         }
