@@ -215,7 +215,7 @@ const Token = struct {
                         }
                         offset += 1;
                     } else {
-                        offset = (std.mem.indexOfScalarPos(u8, buf[0..end], offset, '\\') orelse return) + 1;
+                        offset = (std.mem.indexOfPos(u8, buf[0..end], offset, "\\\\") orelse return) + 2;
                         active = true;
                     }
                 }
@@ -289,6 +289,10 @@ const Stream = struct {
     fn peek(self: *@This()) u8 {
         if(self.buffer[self.pos.offset] == 0) return 0;
         return self.buffer[self.pos.offset];
+    }
+
+    fn matches(self: *@This(), pattern: []const u8) bool {
+        return std.mem.eql(u8, (self.buffer + self.pos.offset)[0..pattern.len], pattern);
     }
 
     fn consume(self: *@This()) u8 {
@@ -401,7 +405,8 @@ const Stream = struct {
                             length += 1;
                             const potential_end = self.pos;
                             self.skip_whitespace();
-                            if(self.peek() == '\\') {
+                            if(self.matches("\\\\")) {
+                                _ = self.consume();
                                 _ = self.consume();
                             } else {
                                 self.pos = potential_end;
@@ -458,6 +463,7 @@ const Stream = struct {
                         }
                     },
                     '\\' => {
+                        std.debug.assert(self.consume() == '\\');
                         try self.states.append(.{.multi_string = {}});
                         break :value .multi_string_start;
                     },
