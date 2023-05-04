@@ -771,6 +771,7 @@ const ExpressionValue = union(enum) {
             transform,
             join,
             shell,
+            import,
         },
     },
     host_string_underlying,
@@ -868,10 +869,10 @@ const Expression = struct {
         }
     }
 
-    fn to_string(self: *@This()) ![]const u8 {
+    fn to_string(self: *@This()) ![:0]const u8 {
         var result = std.ArrayListUnmanaged(u8){};
         try self.append_string_value(&result);
-        return result.toOwnedSlice(alloc);
+        return result.toOwnedSliceSentinel(alloc, 0);
     }
 
     fn deep_copy_value(value: u32) !ExpressionValue {
@@ -974,6 +975,9 @@ const Expression = struct {
                     return;
                 } else if(std.mem.eql(u8, is, "@shell")) {
                     self.value = .{.builtin_function = .{.token = i, .value = .shell}};
+                    return;
+                } else if(std.mem.eql(u8, is, "@import")) {
+                    self.value = .{.builtin_function = .{.token = i, .value = .import}};
                     return;
                 }
                 return try self.make_alias(scope, expressions.at(scope).dealias().value.dict.lookup(is) orelse {
@@ -1124,6 +1128,16 @@ const Expression = struct {
                                 else => return err,
                             };
                             self.value = .{.string = .{.orig_bound = self.bound(), .value = try store_dir.?.realpathAlloc(alloc, hash_z)}};
+                        },
+                        .import => {
+                            std.debug.assert(c.args.size == 1);
+                            const path = expressions.at(c.args.get("path").?);
+                            try path.resolve(scope);
+                            const current_source_file = source_files.at(tokens.at(f.token).loc.source_file);
+                            const new_file = try open_file(current_source_file.dir, try path.to_string(), self.bound());
+                            self.resolving = false;
+                            self.value = .{.source_file = .{.file = new_file, .bound = self.bound()}};
+                            return @call(.always_tail, resolve, .{self, scope});
                         },
                     },
                     else => {
@@ -1345,9 +1359,9 @@ pub fn main() !void {
         if(std.mem.startsWith(u8, arg, "--host-dir=")) {
             host_path = arg[11..];
         } else if(std.mem.startsWith(u8, arg, "--build-dir=")) {
-            build_dir = try std.fs.cwd().openDirZ(arg[12..], .{}, false);
+            build_dir = try std.fs.cwd().makeOpenPath(arg[12..], .{});
         } else if(std.mem.startsWith(u8, arg, "--store-dir=")) {
-            store_dir = try std.fs.cwd().openDirZ(arg[12..], .{}, false);
+            store_dir = try std.fs.cwd().makeOpenPath(arg[12..], .{});
         } else {
             try positional_args.append(arg);
         }
