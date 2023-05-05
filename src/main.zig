@@ -19,6 +19,7 @@ var build_dir: ?std.fs.Dir = null;
 var store_dir: ?std.fs.Dir = null;
 
 var debug = false;
+var keep_failed = false;
 
 const SourceFile = struct {
     buffer: [:0]const u8,
@@ -1106,7 +1107,13 @@ const Expression = struct {
                                         },
                                         else => return mkdir_err,
                                     };
-                                    errdefer build_dir.?.deleteTree(hash_z) catch {};
+                                    errdefer {
+                                        if(keep_failed) {
+                                            std.debug.print("Shell command with hash {s} failed, keeping directory for inspection\n", .{hash_z});
+                                        } else {
+                                            build_dir.?.deleteTree(hash_z) catch {};
+                                        }
+                                    }
 
                                     const work_dir = try build_dir.?.openDirZ(hash_z, .{}, false);
                                     const pipe = try std.os.pipe();
@@ -1377,6 +1384,8 @@ pub fn main() !void {
             store_dir = try std.fs.cwd().makeOpenPath(arg[12..], .{});
         } else if(std.mem.eql(u8, arg, "--debug")) {
             debug = true;
+        } else if(std.mem.eql(u8, arg, "--keep-failed")) {
+            keep_failed = true;
         } else {
             try positional_args.append(arg);
         }
