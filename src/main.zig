@@ -877,10 +877,17 @@ const Expression = struct {
 
     fn deep_copy_value(value: u32) !ExpressionValue {
         switch(expressions.at(value).value) {
-            .dict => |d| return .{.dict = .{
-                .values = try d.values.clone(alloc),
-                .parent = d.parent,
-            }},
+            .dict => |d| {
+                const values = try d.values.clone(alloc);
+                var it = values.valueIterator();
+                while(it.next()) |i| {
+                    i.* = add_expr(try deep_copy_value(i.*));
+                }
+                return .{.dict = .{
+                    .values = values,
+                    .parent = d.parent,
+                }};
+            },
             .function => |f| return .{.function = .{
                 // We don't need to deep copy the argument dicts because they are deep
                 // copied before they are modified, during the call anyways
