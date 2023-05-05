@@ -18,6 +18,8 @@ var host_string_expr: ?u32 = null;
 var build_dir: ?std.fs.Dir = null;
 var store_dir: ?std.fs.Dir = null;
 
+var debug = false;
+
 const SourceFile = struct {
     buffer: [:0]const u8,
     realpath: [*:0]const u8,
@@ -1092,6 +1094,9 @@ const Expression = struct {
                             std.crypto.hash.Sha1.hash(script, &digest, .{});
                             var hash_buf: [std.crypto.hash.Sha1.digest_length * 2 + 1]u8 = undefined;
                             const hash_z = try std.fmt.bufPrintZ(&hash_buf, "{s}", .{std.fmt.fmtSliceHexLower(&digest)});
+                            if(debug) {
+                                std.debug.print("\x1b[31;1mBash script with hash {s}\n{s}\x1b[0m\n", .{hash_z, script});
+                            }
                             store_dir.?.accessZ(hash_z, .{}) catch |err| switch (err) {
                                 error.FileNotFound => {
                                     build_dir.?.makeDirZ(hash_z) catch |mkdir_err| switch (mkdir_err) {
@@ -1370,6 +1375,8 @@ pub fn main() !void {
             build_dir = try std.fs.cwd().makeOpenPath(arg[12..], .{});
         } else if(std.mem.startsWith(u8, arg, "--store-dir=")) {
             store_dir = try std.fs.cwd().makeOpenPath(arg[12..], .{});
+        } else if(std.mem.eql(u8, arg, "--debug")) {
+            debug = true;
         } else {
             try positional_args.append(arg);
         }
