@@ -1258,14 +1258,6 @@ const Expression = struct {
         }
     }
 
-    fn append_string_value_at_index(self: @This(), index: usize, str: *std.ArrayListUnmanaged(u8)) !void {
-        switch(self.dealias().value) {
-            .list => |l| expressions.at(l.items[index]).dealias().append_string_value(str),
-            .transformed_list => |t| expressions.at(try expressions.at(t.elements).value_at_index(index)).dealias().append_string_value(str),
-            else => unreachable,
-        }
-    }
-
     fn length(self: @This()) usize {
         switch(self.dealias().value) {
             .list => |l| return l.items.len,
