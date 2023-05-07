@@ -1310,6 +1310,10 @@ const Expression = struct {
                     try vi.dealias().append_string_value(str);
                 }
             },
+            .concat => |c| {
+                try expressions.at(c.lhs).append_string_value(str);
+                try expressions.at(c.rhs).append_string_value(str);
+            },
             else => |o| {
                 report_error(
                     self.bound(),
