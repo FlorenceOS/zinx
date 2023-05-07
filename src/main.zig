@@ -322,12 +322,14 @@ const Stream = struct {
                     _ = self.consume();
                 },
                 '/' => {
-                    while(true) {
-                        switch(self.consume()) {
-                            '\n' => break,
-                            else => { },
+                    if(self.matches("//")) {
+                        while(true) {
+                            switch(self.consume()) {
+                                '\n' => break,
+                                else => { },
+                            }
                         }
-                    }
+                    } else return;
                 },
                 else => return,
             }
