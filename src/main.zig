@@ -1313,7 +1313,7 @@ const Expression = struct {
             else => |o| {
                 report_error(
                     self.bound(),
-                    "Expexted string, found {s}",
+                    "Expected string, found {s}",
                     .{@tagName(o)},
                 );
                 return error.BadValue;
