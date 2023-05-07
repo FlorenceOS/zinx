@@ -21,6 +21,8 @@ var store_dir: ?std.fs.Dir = null;
 var debug = false;
 var keep_failed = false;
 
+var known_in_store = std.AutoHashMapUnmanaged([std.crypto.hash.Sha1.digest_length]u8, []const u8){};
+
 const SourceFile = struct {
     buffer: [:0]const u8,
     realpath: [*:0]const u8,
@@ -1116,6 +1118,10 @@ const Expression = struct {
                             std.crypto.hash.Sha1.hash(script, &digest, .{});
                             var hash_buf: [std.crypto.hash.Sha1.digest_length * 2 + 1]u8 = undefined;
                             const hash_z = try std.fmt.bufPrintZ(&hash_buf, "{s}", .{std.fmt.fmtSliceHexLower(&digest)});
+                            if(known_in_store.get(digest)) |p| {
+                                self.value = .{.string = .{.orig_bound = self.bound(), .value = p}};
+                                return;
+                            }
                             if(debug) {
                                 std.debug.print("\x1b[31;1mBash script with hash {s}\n{s}\x1b[0m\n", .{hash_z, script});
                             }
@@ -1168,7 +1174,9 @@ const Expression = struct {
                                 },
                                 else => return err,
                             };
-                            self.value = .{.string = .{.orig_bound = self.bound(), .value = try store_dir.?.realpathAlloc(alloc, hash_z)}};
+                            const p = try store_dir.?.realpathAlloc(alloc, hash_z);
+                            try known_in_store.putNoClobber(alloc, digest, p);
+                            self.value = .{.string = .{.orig_bound = self.bound(), .value = p}};
                         },
                         .import => {
                             std.debug.assert(c.args.size == 1);
