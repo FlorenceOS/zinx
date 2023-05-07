@@ -1237,6 +1237,14 @@ const Expression = struct {
         }
     }
 
+    fn length(self: @This()) usize {
+        switch(self.dealias().value) {
+            .list => |l| return l.items.len,
+            .transformed_list => |t| return expressions.at(t.elements).length(),
+            else => unreachable,
+        }
+    }
+
     fn append_string_value(self: @This(), str: *std.ArrayListUnmanaged(u8)) !void {
         switch(self.dealias().value) {
             .string => |s| {
@@ -1259,26 +1267,14 @@ const Expression = struct {
             },
             .joined_string => |j| {
                 const separator = expressions.at(j.separator).dealias();
-                try expressions.at(j.elements).resolve(j.scope);
-                switch(expressions.at(j.elements).dealias().value) {
-                    .list => |l| for(l.items, 0..) |item, i| {
-                        if(i > 0) try separator.append_string_value(str);
-                        try expressions.at(item).dealias().append_string_value(str);
-                    },
-                    .transformed_list => |t| {
-                        var current = t.elements;
-                        while(expressions.at(current).dealias().value == .transformed_list) {
-                            current = expressions.at(current).dealias().value.transformed_list.elements;
-                        }
-                        const transformed_list = expressions.at(j.elements).dealias();
-                        const list = expressions.at(current).dealias();
-                        std.debug.assert(list.value == .list);
-                        for(0..list.value.list.items.len) |i| {
-                            if(i > 0) try separator.append_string_value(str);
-                            try expressions.at(try transformed_list.value_at_index(i)).dealias().append_string_value(str);
-                        }
-                    },
-                    else => unreachable,
+                const l = expressions.at(j.elements);
+                try l.resolve(j.scope);
+
+                for(0..l.length()) |i| {
+                    if(i > 0) try separator.append_string_value(str);
+                    const vi = expressions.at(try l.dealias().value_at_index(i));
+                    try vi.resolve(j.scope);
+                    try vi.dealias().append_string_value(str);
                 }
             },
             else => |o| {
