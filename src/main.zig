@@ -141,6 +141,7 @@ const Token = struct {
         dot,
         eql,
         comma,
+        plus,
         plain_string_start,
         plain_string_chunk,
         plain_string_end,
@@ -452,6 +453,7 @@ const Stream = struct {
                     ')' => break :value .rparen,
                     '[' => break :value .lsquare,
                     ']' => break :value .rsquare,
+                    '+' => break :value .plus,
                     '{' => {
                         depth.* += 1;
                         break :value .lcurly;
@@ -637,7 +639,7 @@ fn parse_expr(tok: *SourceBound) anyerror!u32 {
         .identifier => add_expr(.{.identifier = primary_expr}),
         .plain_string_chunk, .plain_string_end,
         .multi_string_chunk, .multi_string_end,
-        .rparen, .rsquare, .rcurly, .bad_char, .dot, .eql, .comma,
+        .rparen, .rsquare, .rcurly, .bad_char, .dot, .eql, .comma, .plus,
         => |o| {
             report_error(
                 .{.begin = primary_expr, .end = primary_expr},
@@ -704,6 +706,13 @@ fn parse_expr(tok: *SourceBound) anyerror!u32 {
                 lhs = add_expr(.{.call = .{
                     .callee = lhs,
                     .args = result,
+                }});
+            },
+            .plus => {
+                _ = tok.consume_token();
+                lhs = add_expr(.{.concat = .{
+                    .lhs = lhs,
+                    .rhs = try parse_expr(tok),
                 }});
             },
             .lsquare => @panic("TODO: Subscript"),
@@ -799,6 +808,10 @@ const ExpressionValue = union(enum) {
         elements: u32,
         separator: u32,
         scope: u32,
+    },
+    concat: struct {
+        lhs: u32,
+        rhs: u32,
     },
 
     // Unresolved values, has to be a value above after resolution
@@ -916,6 +929,10 @@ const Expression = struct {
             },
             .transformed_list => unreachable,
             .joined_string => unreachable,
+            .concat => |c| return .{.concat = .{
+                .lhs = add_expr(try deep_copy_value(c.lhs)),
+                .rhs = add_expr(try deep_copy_value(c.rhs)),
+            }},
             .call => |c| {
                 var result = c;
                 result.callee = add_expr(try deep_copy_value(result.callee));
@@ -971,6 +988,10 @@ const Expression = struct {
             .function => |*f| f.argument_template.parent = scope,
             .string, .alias, .host, .builtin_function, .host_string_underlying, .transformed_list, .joined_string,
             => {},
+            .concat => |c| {
+                try expressions.at(c.lhs).resolve(scope);
+                try expressions.at(c.rhs).resolve(scope);
+            },
             .identifier => |i| {
                 std.debug.assert(scope != NO_SCOPE);
                 const is = tokens.at(i).identifier_string() catch unreachable;
@@ -1225,6 +1246,14 @@ const Expression = struct {
                 try expressions.at(transform.function.body).resolve(new_scope);
                 return transform.function.body;
             },
+            .concat => |c| {
+                const ll = expressions.at(c.lhs).length();
+                if(index < ll) {
+                    return expressions.at(c.lhs).value_at_index(index);
+                } else {
+                    return expressions.at(c.rhs).value_at_index(index - ll);
+                }
+            },
             else => unreachable,
         }
     }
@@ -1241,6 +1270,7 @@ const Expression = struct {
         switch(self.dealias().value) {
             .list => |l| return l.items.len,
             .transformed_list => |t| return expressions.at(t.elements).length(),
+            .concat => |c| return expressions.at(c.lhs).length() + expressions.at(c.rhs).length(),
             else => unreachable,
         }
     }
@@ -1308,6 +1338,8 @@ const Expression = struct {
                 }
                 return result.?;
             },
+
+            .concat => |ac| return expressions.at(ac.lhs).bound().combine(expressions.at(ac.rhs).bound()),
 
             .transformed_list => |t| t.orig_bound,
             .joined_string => |j| j.orig_bound,
