@@ -16,10 +16,11 @@ var host_path: ?[]const u8 = null;
 var host_string_expr: ?u32 = null;
 
 var build_dir: ?std.fs.Dir = null;
-var store_dir: ?std.fs.Dir = null;
+var store_dir: ?std.fs.IterableDir = null;
 
 var debug = false;
 var keep_failed = false;
+var collect_garbage = false;
 
 var known_in_store = std.AutoHashMapUnmanaged([std.crypto.hash.Sha1.digest_length]u8, []const u8){};
 
@@ -1127,7 +1128,7 @@ const Expression = struct {
                             if(debug) {
                                 std.debug.print("\x1b[31;1mBash script with hash {s}\n{s}\x1b[0m\n", .{hash_z, script});
                             }
-                            store_dir.?.accessZ(hash_z, .{}) catch |err| switch (err) {
+                            store_dir.?.dir.accessZ(hash_z, .{}) catch |err| switch (err) {
                                 error.FileNotFound => {
                                     build_dir.?.makeDirZ(hash_z) catch |mkdir_err| switch (mkdir_err) {
                                         error.PathAlreadyExists => {
@@ -1167,7 +1168,7 @@ const Expression = struct {
                                             const wait_result = std.os.waitpid(pid, 0);
                                             const exit_code = (wait_result.status >> 8) & 0xff;
                                             if(exit_code == 0) {
-                                                try std.os.renameatZ(build_dir.?.fd, hash_z, store_dir.?.fd, hash_z);
+                                                try std.os.renameatZ(build_dir.?.fd, hash_z, store_dir.?.dir.fd, hash_z);
                                             } else {
                                                 return error.CommandFailed;
                                             }
@@ -1176,7 +1177,7 @@ const Expression = struct {
                                 },
                                 else => return err,
                             };
-                            const p = try store_dir.?.realpathAlloc(alloc, hash_z);
+                            const p = try store_dir.?.dir.realpathAlloc(alloc, hash_z);
                             try known_in_store.putNoClobber(alloc, digest, p);
                             self.value = .{.string = .{.orig_bound = self.bound(), .value = p}};
                         },
@@ -1411,11 +1412,13 @@ pub fn main() !void {
         } else if(std.mem.startsWith(u8, arg, "--build-dir=")) {
             build_dir = try std.fs.cwd().makeOpenPath(arg[12..], .{});
         } else if(std.mem.startsWith(u8, arg, "--store-dir=")) {
-            store_dir = try std.fs.cwd().makeOpenPath(arg[12..], .{});
+            store_dir = try std.fs.cwd().makeOpenPathIterable(arg[12..], .{});
         } else if(std.mem.eql(u8, arg, "--debug")) {
             debug = true;
         } else if(std.mem.eql(u8, arg, "--keep-failed")) {
             keep_failed = true;
+        } else if(std.mem.eql(u8, arg, "--gc")) {
+            collect_garbage = true;
         } else {
             try positional_args.append(arg);
         }
@@ -1445,5 +1448,23 @@ pub fn main() !void {
     const cmdline_expr = try parse_expr(&cmdline_tokens);
     try expressions.at(cmdline_expr).resolve(root_expr);
     const result = try expressions.at(cmdline_expr).to_string();
+
+    if(collect_garbage) {
+        var hash: [std.crypto.hash.Sha1.digest_length]u8 = undefined;
+        var store_it = store_dir.?.iterate();
+        while(try store_it.next()) |dent| {
+            const keep = blk: {
+                if(dent.name.len != hash.len * 2) break :blk false;
+                _ = std.fmt.hexToBytes(&hash, dent.name) catch break :blk false;
+                if(known_in_store.get(hash) == null) break :blk false;
+                break :blk true;
+            };
+            if(!keep) {
+                std.debug.print("Deleting unreferenced store hash {s}...\n", .{dent.name});
+                try store_dir.?.dir.deleteTree(dent.name);
+            }
+        }
+    }
+
     try std.io.getStdOut().writer().print("{s}\n",.{result});
 }
