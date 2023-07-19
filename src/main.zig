@@ -1149,8 +1149,9 @@ const Expression = struct {
                                     const pipe = try std.os.pipe();
                                     switch(try std.os.fork()) {
                                         0 => {
+                                            var hash_env = "HASH=".* ++ hash_buf ++ "\x00".*;
                                             var argv = [_:null]?[*:0]const u8{"sh", "-"};
-                                            var envp = [_:null]?[*:0]const u8{};
+                                            var envp = [_:null]?[*:0]const u8{@ptrCast(&hash_env)};
                                             try std.os.dup2(pipe[0], 0);
                                             try std.os.dup2(2, 1);
                                             std.os.close(pipe[0]);
