@@ -144,6 +144,7 @@ const Token = struct {
         eql,
         comma,
         plus,
+        slash,
         plain_string_start,
         plain_string_chunk,
         plain_string_end,
@@ -458,6 +459,7 @@ const Stream = struct {
                     '[' => break :value .lsquare,
                     ']' => break :value .rsquare,
                     '+' => break :value .plus,
+                    '/' => break :value .slash,
                     '{' => {
                         depth.* += 1;
                         break :value .lcurly;
@@ -643,7 +645,7 @@ fn parse_expr(tok: *SourceBound) anyerror!u32 {
         .identifier => add_expr(.{.identifier = primary_expr}),
         .plain_string_chunk, .plain_string_end,
         .multi_string_chunk, .multi_string_end,
-        .rparen, .rsquare, .rcurly, .bad_char, .dot, .eql, .comma, .plus,
+        .rparen, .rsquare, .rcurly, .bad_char, .dot, .eql, .comma, .plus, .slash,
         => |o| {
             report_error(
                 .{.begin = primary_expr, .end = primary_expr},
@@ -715,6 +717,13 @@ fn parse_expr(tok: *SourceBound) anyerror!u32 {
             .plus => {
                 _ = tok.consume_token();
                 lhs = add_expr(.{.concat = .{
+                    .lhs = lhs,
+                    .rhs = try parse_expr(tok),
+                }});
+            },
+            .slash => {
+                _ = tok.consume_token();
+                lhs = add_expr(.{.override = .{
                     .lhs = lhs,
                     .rhs = try parse_expr(tok),
                 }});
@@ -878,6 +887,13 @@ const Expression = struct {
                     return error.BadKey;
                 }
             },
+            .override => |o| {
+                const rhs_lookup = expressions.at(o.rhs).lookup(key);
+                if(rhs_lookup == error.BadKey) {
+                    return expressions.at(o.lhs).lookup(key);
+                }
+                return rhs_lookup;
+            },
             else => |o| {
                 report_error(
                     self.bound(),
@@ -1020,8 +1036,9 @@ const Expression = struct {
                     return error.BadIdentifier;
                 });
             },
-            .override => {
-                @panic("TODO: Override");
+            .override => |o| {
+                try expressions.at(o.lhs).resolve(scope);
+                try expressions.at(o.rhs).resolve(scope);
             },
             .source_file => |sf| {
                 if(source_files.at(sf.file).tokens == null) {
