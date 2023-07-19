@@ -746,12 +746,12 @@ const Scope = struct {
     values: std.StringHashMapUnmanaged(u32) = .{}, // exprs
     parent: u32,
 
-    fn lookup(self: @This(), name: []const u8) ?u32 {
+    fn recursive_lookup(self: @This(), name: []const u8) error{BadKey}!u32 {
         if(self.values.get(name)) |v| {
             return v;
         } else {
             if(self.parent == NO_SCOPE) {
-                return null;
+                return error.BadKey;
             } else {
                 var parent = expressions.at(self.parent);
                 if(parent.value == .alias) {
@@ -759,8 +759,8 @@ const Scope = struct {
                 }
 
                 switch (parent.value) {
-                    .dict => |scope| return @call(.always_tail, Scope.lookup, .{scope, name}),
-                    .function => |func| return @call(.always_tail, Scope.lookup, .{func.argument_template, name}),
+                    .dict => |scope| return @call(.always_tail, Scope.recursive_lookup, .{scope, name}),
+                    .function => |func| return @call(.always_tail, Scope.recursive_lookup, .{func.argument_template, name}),
                     inline else => |_, tag| @panic("Invalid scope parent: " ++ @tagName(tag)),
                 }
             }
@@ -875,7 +875,7 @@ const Expression = struct {
         }
     }
 
-    fn lookup(self: @This(), key: []const u8) !?u32 {
+    fn lookup(self: @This(), key: []const u8) error{BadKey}!u32 {
         switch(self.value) {
             .host => |b| {
                 return add_expr(.{.host_string_underlying = b});
@@ -900,7 +900,7 @@ const Expression = struct {
                     "Expected dict, found {s}",
                     .{@tagName(o)},
                 );
-                return error.KeyNotFound;
+                return error.BadKey;
             },
         }
     }
@@ -1031,9 +1031,9 @@ const Expression = struct {
                     self.value = .{.builtin_function = .{.token = i, .value = .import}};
                     return;
                 }
-                return try self.make_alias(scope, expressions.at(scope).dealias().value.dict.lookup(is) orelse {
+                return try self.make_alias(scope, expressions.at(scope).dealias().value.dict.recursive_lookup(is) catch |err| {
                     report_error(token_bound(i), "Identifier '{s}' not found!", .{is});
-                    return error.BadIdentifier;
+                    return err;
                 });
             },
             .override => |o| {
@@ -1222,13 +1222,13 @@ const Expression = struct {
             .member_access => |ma| {
                 try expressions.at(ma.src).resolve(scope);
                 const str = tokens.at(ma.ident).identifier_string() catch unreachable;
-                try self.make_alias(ma.src, try expressions.at(ma.src).dealias().lookup(str) orelse {
+                try self.make_alias(ma.src, expressions.at(ma.src).dealias().lookup(str) catch |err| {
                     report_error(
                         token_bound(ma.ident),
                         "Key '{s}' not found in dict",
                         .{str},
                     );
-                    return error.BadKey;
+                    return err;
                 });
             },
             .string_parts => |sp| {
@@ -1248,13 +1248,13 @@ const Expression = struct {
                 try expressions.at(ss.idx).dealias().append_string_value(&str);
 
                 try expressions.at(ss.src).resolve(scope);
-                try self.make_alias(ss.src, try expressions.at(ss.src).dealias().lookup(str.items) orelse {
+                try self.make_alias(ss.src, expressions.at(ss.src).dealias().lookup(str.items) catch |err| {
                     report_error(
                         expressions.at(ss.idx).bound(),
                         "Key '{s}' not found in dict",
                         .{str.items},
                     );
-                    return error.BadKey;
+                    return err;
                 });
             },
         }
