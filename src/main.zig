@@ -66,19 +66,19 @@ fn open_file(dir: std.fs.Dir, path: [:0]const u8, bound: ?SourceBound) !u32 {
     const new_dir = try std.fs.openDirAbsolute(std.fs.path.dirname(rp).?, .{});
 
     try source_files.append(alloc, .{
-        .buffer = @ptrCast([:0]const u8, mem),
+        .buffer = @ptrCast(mem),
         .realpath = try alloc.dupeZ(u8, rp),
         .dir = new_dir,
         .top_level_value = NO_SCOPE,
         .tokens = null,
     });
 
-    return @intCast(u32, source_files.count() - 1);
+    return @intCast(source_files.count() - 1);
 }
 
 fn add_expr(expr: ExpressionValue) u32 {
     expressions.append(alloc, .{.value = expr}) catch unreachable;
-    return @intCast(u32, expressions.count() - 1);
+    return @intCast(expressions.count() - 1);
 }
 
 const SourceLocation = struct {
@@ -106,8 +106,8 @@ const SourceBound = struct {
     fn combine(self: @This(), other: @This()) @This() {
         std.debug.assert(tokens.at(self.begin).loc.source_file == tokens.at(other.begin).loc.source_file);
         return .{
-            .begin = std.math.min(self.begin, other.begin),
-            .end = std.math.max(self.end, other.end),
+            .begin = @min(self.begin, other.begin),
+            .end = @max(self.end, other.end),
         };
     }
 
@@ -342,7 +342,7 @@ const Stream = struct {
             .value = .bad_char,
             .loc = self.pos.prev().?,
         });
-        const faketok = @intCast(u32, tokens.count() - 1);
+        const faketok: u32 = @intCast(tokens.count() - 1);
         report_error(
             .{.begin = faketok, .end = faketok},
             "Unexpected character: {c} (0x{X}){s}",
@@ -512,7 +512,7 @@ const Stream = struct {
 };
 
 fn tokenize_file(source_file: u32) !SourceBound {
-    const begin = @intCast(u32, tokens.count());
+    const begin: u32 = @intCast(tokens.count());
 
     var stream = Stream {
         .buffer = source_files.at(source_file).buffer,
@@ -532,7 +532,7 @@ fn tokenize_file(source_file: u32) !SourceBound {
 
     return .{
         .begin = begin,
-        .end = @intCast(u32, tokens.count() - 1),
+        .end = @intCast(tokens.count() - 1),
     };
 }
 
@@ -751,8 +751,8 @@ const Scope = struct {
                 }
 
                 switch (parent.value) {
-                    .dict => |scope| return @call(.always_tail, scope.lookup, .{name}),
-                    .function => |func| return @call(.always_tail, func.argument_template.lookup, .{name}),
+                    .dict => |scope| return @call(.always_tail, Scope.lookup, .{scope, name}),
+                    .function => |func| return @call(.always_tail, Scope.lookup, .{func.argument_template, name}),
                     inline else => |_, tag| @panic("Invalid scope parent: " ++ @tagName(tag)),
                 }
             }
@@ -1448,7 +1448,7 @@ pub fn main() !void {
         .top_level_value = NO_SCOPE,
         .tokens = null,
     });
-    var cmdline_tokens = try tokenize_file(@intCast(u32, source_files.count() - 1));
+    var cmdline_tokens = try tokenize_file(@intCast(source_files.count() - 1));
     const cmdline_expr = try parse_expr(&cmdline_tokens);
     try expressions.at(cmdline_expr).resolve(root_expr);
     const result = try expressions.at(cmdline_expr).to_string();
