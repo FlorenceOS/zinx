@@ -13,7 +13,6 @@ const NO_SCOPE = 0xFFFFFFFF;
 const NO_ARG_VALUE = 0xFFFFFFFF;
 
 var host_path: ?[]const u8 = null;
-var host_string_expr: ?u32 = null;
 
 var build_dir: ?std.fs.Dir = null;
 var store_dir: ?std.fs.IterableDir = null;
@@ -791,7 +790,7 @@ const ExpressionValue = union(enum) {
             import,
         },
     },
-    host_string_underlying,
+    host_string_underlying: SourceBound,
 
     // Lazily resolves children upon member access
     dict: Scope,
@@ -869,8 +868,8 @@ const Expression = struct {
 
     fn lookup(self: @This(), key: []const u8) !?u32 {
         switch(self.value) {
-            .host => {
-                return host_string_expr.?;
+            .host => |b| {
+                return add_expr(.{.host_string_underlying = b});
             },
             .dict => |d| {
                 if(d.values.get(key)) |val| {
@@ -1328,7 +1327,7 @@ const Expression = struct {
 
     fn bound(self: @This()) SourceBound {
         return switch(self.value) {
-            .host_string_underlying => unreachable,
+            .host_string_underlying => |hu| hu,
 
             .string_parts => |sp| {
                 var result = @as(?SourceBound, null);
@@ -1428,8 +1427,6 @@ pub fn main() !void {
             try positional_args.append(arg);
         }
     }
-
-    host_string_expr = add_expr(.{.host_string_underlying = {}});
 
     const root_file = try open_file(std.fs.cwd(), positional_args.slice()[1], null);
     const root_expr = add_expr(.{.source_file = .{
