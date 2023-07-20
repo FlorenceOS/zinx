@@ -57,7 +57,7 @@ fn open_file(dir: std.fs.Dir, path: [:0]const u8, bound: ?SourceBound) !u32 {
         null,
         (file_size + 0x1000) & ~@as(usize, 0xFFF),
         std.os.PROT.READ,
-        std.os.MAP.SHARED,
+        std.os.MAP.PRIVATE,
         fd.handle,
         0,
     );
