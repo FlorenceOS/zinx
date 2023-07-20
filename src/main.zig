@@ -294,7 +294,6 @@ const Stream = struct {
     }
 
     fn peek(self: *@This()) u8 {
-        if(self.buffer[self.pos.offset] == 0) return 0;
         return self.buffer[self.pos.offset];
     }
 
