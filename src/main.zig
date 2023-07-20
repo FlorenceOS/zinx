@@ -726,6 +726,7 @@ fn parse_expr(tok: *SourceBound) anyerror!u32 {
                 lhs = add_expr(.{.override = .{
                     .lhs = lhs,
                     .rhs = try parse_expr(tok),
+                    .scope = NO_SCOPE,
                 }});
             },
             .lsquare => @panic("TODO: Subscript"),
@@ -844,6 +845,7 @@ const ExpressionValue = union(enum) {
     override: struct {
         lhs: u32, // expr
         rhs: u32, // expr
+        scope: u32,
     },
     source_file: struct {
         bound: SourceBound,
@@ -851,13 +853,21 @@ const ExpressionValue = union(enum) {
     },
 };
 
+fn expr_scope(expr: u32) u32 {
+    if(expr == NO_SCOPE) return expr;
+    return switch(expressions.at(expr).dealias().value) {
+        .override => |o| o.scope,
+        else => expr,
+    };
+}
+
 const Expression = struct {
     value: ExpressionValue,
     resolving: bool = false,
     resolved: bool = false,
 
     fn make_alias(self: *@This(), dict: u32, value: u32) !void {
-        try expressions.at(value).resolve(dict);
+        try expressions.at(value).resolve(expr_scope(dict));
         const b = self.bound();
         self.value = .{.alias = .{
             .orig_bound = b,
@@ -974,6 +984,7 @@ const Expression = struct {
             .override => |o| return .{.override = .{
                 .lhs = add_expr(try deep_copy_value(o.lhs)),
                 .rhs = add_expr(try deep_copy_value(o.rhs)),
+                .scope = o.scope,
             }},
             .source_file => |sf| return .{.source_file = sf},
             .identifier => |i| return .{.identifier = i},
@@ -1031,12 +1042,16 @@ const Expression = struct {
                     self.value = .{.builtin_function = .{.token = i, .value = .import}};
                     return;
                 }
-                return try self.make_alias(scope, expressions.at(scope).dealias().value.dict.recursive_lookup(is) catch |err| {
+                return try self.make_alias(scope, switch(expressions.at(scope).dealias().value) {
+                    .dict => |d| d.recursive_lookup(is),
+                    else => |e| std.debug.panic("wtf {s}", .{@tagName(e)}),
+                } catch |err| {
                     report_error(token_bound(i), "Identifier '{s}' not found!", .{is});
                     return err;
                 });
             },
-            .override => |o| {
+            .override => |*o| {
+                o.scope = scope;
                 try expressions.at(o.lhs).resolve(scope);
                 try expressions.at(o.rhs).resolve(scope);
             },
