@@ -1197,8 +1197,8 @@ const Expression = struct {
                                             }
                                             std.os.close(pipe[1]);
 
-                                            const wait_result = std.os.waitpid(pid, 0);
-                                            if(wait_result.status == 0) {
+                                            const status = std.os.waitpid(pid, 0).status;
+                                            if(std.os.W.IFEXITED(status) and std.os.W.EXITSTATUS(status) == 0) {
                                                 try std.os.renameatZ(build_dir.?.fd, hash_z, store_dir.?.dir.fd, hash_z);
                                             } else {
                                                 return error.CommandFailed;
