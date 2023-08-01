@@ -885,7 +885,7 @@ const Expression = struct {
     }
 
     fn lookup(self: @This(), key: []const u8) error{BadKey}!u32 {
-        switch(self.value) {
+        switch(self.dealias().value) {
             .host => |b| {
                 return add_expr(.{.host_string_underlying = b});
             },
