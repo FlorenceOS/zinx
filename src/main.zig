@@ -728,7 +728,14 @@ fn parse_expr(tok: *SourceBound) anyerror!u32 {
                     .scope = NO_SCOPE,
                 }});
             },
-            .lsquare => @panic("TODO: Subscript"),
+            .lsquare => {
+                _ = tok.consume_token();
+                lhs = add_expr(.{.subscript = .{
+                    .src = lhs,
+                    .idx = try parse_expr(tok),
+                }});
+                std.debug.assert(tokens.at(tok.consume_token().?).value == .rsquare);
+            },
 
             .identifier,
             .rparen, .lcurly, .rcurly, .rsquare, .eql, .comma,
