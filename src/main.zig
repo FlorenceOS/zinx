@@ -623,7 +623,13 @@ fn parse_expr(tok: *SourceBound) anyerror!u32 {
                     break;
                 }
             }
-            std.debug.assert(tokens.at(tok.consume_token().?).value == .rsquare);
+            if(tokens.at(tok.consume_token().?).value != .rsquare) {
+                report_error(
+                    lsquare_bound,
+                    "Expected ']' or ','",
+                    .{},
+                );
+            }
             break :blk add_expr(.{.list = .{
                 .lsquare_bound = lsquare_bound,
                 .items = try result.toOwnedSlice(alloc),
@@ -712,7 +718,14 @@ fn parse_expr(tok: *SourceBound) anyerror!u32 {
                         break;
                     }
                 }
-                std.debug.assert(tokens.at(tok.consume_token().?).value == .rparen);
+                const rparen = tok.consume_token().?;
+                if(tokens.at(rparen).value != .rparen) {
+                    report_error(
+                        token_bound(rparen),
+                        "Expected ')' or ','",
+                        .{},
+                    );
+                }
                 lhs = add_expr(.{.call = .{
                     .callee = lhs,
                     .args = result,
