@@ -640,7 +640,10 @@ fn parse_expr(tok: *SourceBound) anyerror!u32 {
             while(true) {
                 switch(tok.peek_token().?.value) {
                     .plain_string_end, .multi_string_end => {
-                        _ = tok.consume_token();
+                        const end = tok.consume_token();
+                        if(string_parts.items.len == 0) {
+                            try string_parts.append(alloc, .{.empty_string = end.?});
+                        }
                         break :blk add_expr(.{.string_parts = try string_parts.toOwnedSlice(alloc)});
                     },
                     .plain_string_chunk, .multi_string_chunk => {
@@ -799,6 +802,7 @@ const ExpressionValue = union(enum) {
     const StringPart = union(enum) {
         string_chunk: u32, // token
         expression_chunk: u32, // expr
+        empty_string: u32, // token
     };
 
     // Needs no resolution
@@ -1351,6 +1355,7 @@ const Expression = struct {
                         .expression_chunk => |ec| {
                             expressions.at(ec).append_string_value(str) catch unreachable;
                         },
+                        .empty_string => {},
                     }
                 }
             },
@@ -1393,7 +1398,7 @@ const Expression = struct {
                 for(sp) |part| {
                     var part_bound = @as(SourceBound, undefined);
                     switch(part) {
-                        .string_chunk => |sc| part_bound = token_bound(sc),
+                        .string_chunk, .empty_string => |sc| part_bound = token_bound(sc),
                         .expression_chunk => |ec| part_bound = expressions.at(ec).bound(),
                     }
                     if(result) |res| {
