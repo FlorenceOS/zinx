@@ -15,7 +15,7 @@ const NO_ARG_VALUE = 0xFFFFFFFF;
 var host_path: ?[]const u8 = null;
 
 var build_dir: ?std.fs.Dir = null;
-var store_dir: ?std.fs.IterableDir = null;
+var store_dir: ?std.fs.Dir = null;
 
 var debug = false;
 var keep_failed = false;
@@ -32,7 +32,7 @@ const SourceFile = struct {
 };
 
 fn open_file(dir: std.fs.Dir, path: [:0]const u8, bound: ?SourceBound) !u32 {
-    var realpath_buf: [std.os.PATH_MAX]u8 = undefined;
+    var realpath_buf: [std.posix.PATH_MAX]u8 = undefined;
     const rp = dir.realpathZ(path, &realpath_buf) catch |err| {
         if(err == error.FileNotFound) {
             report_error(bound, "File not found: {s}", .{path});
@@ -53,11 +53,13 @@ fn open_file(dir: std.fs.Dir, path: [:0]const u8, bound: ?SourceBound) !u32 {
 
     const fd = try dir.openFileZ(path, .{});
     const file_size = try fd.getEndPos();
-    const mem = try std.os.mmap(
+    const mem = try std.posix.mmap(
         null,
         (file_size + 0x1000) & ~@as(usize, 0xFFF),
-        std.os.PROT.READ,
-        std.os.MAP.PRIVATE,
+        std.posix.PROT.READ,
+        .{
+            .TYPE = .PRIVATE,
+        },
         fd.handle,
         0,
     );
@@ -189,7 +191,7 @@ const Token = struct {
 
     fn append_string_value(self: @This(), str: *std.ArrayListUnmanaged(u8)) void {
         var offset: usize = self.loc.offset;
-        var end = offset + self.length();
+        const end = offset + self.length();
         const buf = source_files.at(self.loc.source_file).buffer;
 
         switch(self.value) {
@@ -370,7 +372,8 @@ const Stream = struct {
                                 _ = self.consume();
                                 try self.states.append(.{.normal = 0});
                                 if(length == 0) {
-                                    return @call(.always_tail, generate_token, .{self});
+                                    return self.generate_token();
+                                    //return @call(.always_tail, generate_token, .{self});
                                 } else {
                                     break :value .plain_string_chunk;
                                 }
@@ -427,7 +430,8 @@ const Stream = struct {
                                 _ = self.consume();
                                 try self.states.append(.{.normal = 0});
                                 if(length == 0) {
-                                    return @call(.always_tail, generate_token, .{self});
+                                    return self.generate_token();
+                                    //return @call(.always_tail, generate_token, .{self});
                                 } else {
                                     break :value .multi_string_chunk;
                                 }
@@ -466,7 +470,8 @@ const Stream = struct {
                     '}' => {
                         if(depth.* == 0) {
                             _ = self.states.pop();
-                            return @call(.always_tail, generate_token, .{self});
+                            return self.generate_token();
+                            //return @call(.always_tail, generate_token, .{self});
                         } else {
                             depth.* -= 1;
                             break :value .rcurly;
@@ -608,7 +613,7 @@ fn parse_expr(tok: *SourceBound) anyerror!u32 {
         .lcurly => try parse_dict(tok),
         .lsquare => blk: { // List
             var result = std.ArrayListUnmanaged(u32){};
-            var lsquare_bound = tok.*;
+            const lsquare_bound = tok.*;
             while(tok.peek_token().?.value != .rsquare) {
                 const expr = try parse_expr(tok);
                 try result.append(alloc, expr);
@@ -766,8 +771,10 @@ const Scope = struct {
                 }
 
                 switch (parent.value) {
-                    .dict => |scope| return @call(.always_tail, Scope.recursive_lookup, .{scope, name}),
-                    .function => |func| return @call(.always_tail, Scope.recursive_lookup, .{func.argument_template, name}),
+                    .dict => |scope| return scope.recursive_lookup(name),
+                    //.dict => |scope| return @call(.always_tail, Scope.recursive_lookup, .{scope, name}),
+                    .function => |func| return func.argument_template.recursive_lookup(name),
+                    //.function => |func| return @call(.always_tail, Scope.recursive_lookup, .{func.argument_template, name}),
                     inline else => |_, tag| @panic("Invalid scope parent: " ++ @tagName(tag)),
                 }
             }
@@ -1121,7 +1128,8 @@ const Expression = struct {
                         const new_scope = add_expr(.{.dict = args});
                         self.value = try deep_copy_value(f.body);
                         self.resolving = false;
-                        return @call(.always_tail, resolve, .{self, new_scope});
+                        return self.resolve(new_scope);
+                        //return @call(.always_tail, resolve, .{self, new_scope});
                     },
                     .builtin_function => |f| switch(f.value) {
                         .transform => {
@@ -1165,7 +1173,7 @@ const Expression = struct {
                             if(debug) {
                                 std.debug.print("\x1b[31;1mBash script with hash {s}\n{s}\x1b[0m\n", .{hash_z, script});
                             }
-                            store_dir.?.dir.accessZ(hash_z, .{}) catch |err| switch (err) {
+                            store_dir.?.accessZ(hash_z, .{}) catch |err| switch (err) {
                                 error.FileNotFound => {
                                     build_dir.?.makeDirZ(hash_z) catch |mkdir_err| switch (mkdir_err) {
                                         error.PathAlreadyExists => {
@@ -1182,30 +1190,30 @@ const Expression = struct {
                                         }
                                     }
 
-                                    const work_dir = try build_dir.?.openDirZ(hash_z, .{}, false);
-                                    const pipe = try std.os.pipe();
-                                    switch(try std.os.fork()) {
+                                    const work_dir = try build_dir.?.openDirZ(hash_z, .{});
+                                    const pipe = try std.posix.pipe();
+                                    switch(try std.posix.fork()) {
                                         0 => {
                                             var hash_env = "HASH=".* ++ hash_buf ++ "\x00".*;
                                             var argv = [_:null]?[*:0]const u8{"sh", "-", null};
                                             var envp = [_:null]?[*:0]const u8{@ptrCast(&hash_env), null};
-                                            try std.os.dup2(pipe[0], 0);
-                                            try std.os.dup2(2, 1);
-                                            std.os.close(pipe[0]);
-                                            std.os.close(pipe[1]);
-                                            try std.os.fchdir(work_dir.fd);
-                                            return std.os.execveZ("/bin/sh", &argv, &envp);
+                                            try std.posix.dup2(pipe[0], 0);
+                                            try std.posix.dup2(2, 1);
+                                            std.posix.close(pipe[0]);
+                                            std.posix.close(pipe[1]);
+                                            try std.posix.fchdir(work_dir.fd);
+                                            return std.posix.execveZ("/bin/sh", &argv, &envp);
                                         },
                                         else => |pid| {
                                             var written: usize = 0;
                                             while(written < script.len) {
-                                                written += try std.os.write(pipe[1], script[written..]);
+                                                written += try std.posix.write(pipe[1], script[written..]);
                                             }
-                                            std.os.close(pipe[1]);
+                                            std.posix.close(pipe[1]);
 
-                                            const status = std.os.waitpid(pid, 0).status;
-                                            if(std.os.W.IFEXITED(status) and std.os.W.EXITSTATUS(status) == 0) {
-                                                try std.os.renameatZ(build_dir.?.fd, hash_z, store_dir.?.dir.fd, hash_z);
+                                            const status = std.posix.waitpid(pid, 0).status;
+                                            if(std.posix.W.IFEXITED(status) and std.posix.W.EXITSTATUS(status) == 0) {
+                                                try std.posix.renameatZ(build_dir.?.fd, hash_z, store_dir.?.fd, hash_z);
                                             } else {
                                                 return error.CommandFailed;
                                             }
@@ -1214,7 +1222,7 @@ const Expression = struct {
                                 },
                                 else => return err,
                             };
-                            const p = try store_dir.?.dir.realpathAlloc(alloc, hash_z);
+                            const p = try store_dir.?.realpathAlloc(alloc, hash_z);
                             try known_in_store.putNoClobber(alloc, digest, p);
                             self.value = .{.string = .{.orig_bound = self.bound(), .value = p}};
                         },
@@ -1226,7 +1234,8 @@ const Expression = struct {
                             const new_file = try open_file(current_source_file.dir, try path.to_string(), self.bound());
                             self.resolving = false;
                             self.value = .{.source_file = .{.file = new_file, .bound = self.bound()}};
-                            return @call(.always_tail, resolve, .{self, scope});
+                            return self.resolve(scope);
+                            //return @call(.always_tail, resolve, .{self, scope});
                         },
                     },
                     else => {
@@ -1453,7 +1462,9 @@ pub fn main() !void {
         } else if(std.mem.startsWith(u8, arg, "--build-dir=")) {
             build_dir = try std.fs.cwd().makeOpenPath(arg[12..], .{});
         } else if(std.mem.startsWith(u8, arg, "--store-dir=")) {
-            store_dir = try std.fs.cwd().makeOpenPathIterable(arg[12..], .{});
+            store_dir = try std.fs.cwd().makeOpenPath(arg[12..], .{
+                .iterate = true,
+            });
         } else if(std.mem.eql(u8, arg, "--debug")) {
             debug = true;
         } else if(std.mem.eql(u8, arg, "--keep-failed")) {
@@ -1500,7 +1511,7 @@ pub fn main() !void {
             };
             if(!keep) {
                 std.debug.print("Deleting unreferenced store hash {s}...\n", .{dent.name});
-                try store_dir.?.dir.deleteTree(dent.name);
+                try store_dir.?.deleteTree(dent.name);
             }
         }
     }
