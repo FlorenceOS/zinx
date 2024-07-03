@@ -828,6 +828,7 @@ const ExpressionValue = union(enum) {
             join,
             shell,
             import,
+            host_arch,
         },
     },
     host_string_underlying: SourceBound,
@@ -1071,6 +1072,9 @@ const Expression = struct {
                 } else if(std.mem.eql(u8, is, "@import")) {
                     self.value = .{.builtin_function = .{.token = i, .value = .import}};
                     return;
+                } else if(std.mem.eql(u8, is, "@host_arch")) {
+                    self.value = .{.builtin_function = .{.token = i, .value = .host_arch}};
+                    return;
                 }
                 return try self.make_alias(scope, switch(expressions.at(scope).dealias().value) {
                     .dict => |d| d.recursive_lookup(is),
@@ -1149,6 +1153,9 @@ const Expression = struct {
                         //return @call(.always_tail, resolve, .{self, new_scope});
                     },
                     .builtin_function => |f| switch(f.value) {
+                        .host_arch => {
+                            self.value = .{.string = .{.orig_bound = self.bound(), .value = @tagName(@import("builtin").target.cpu.arch) } };
+                        },
                         .transform => {
                             std.debug.assert(c.args.size == 2);
                             const elements = c.args.get("elements").?;
