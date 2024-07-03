@@ -1,0 +1,87 @@
+host = @host.everything
+
+shell = (path, cmd) {
+    path_env = @join(elements = @transform(elements = path + [host], transform = (path) "${path}/bin"), separator = ":")
+    result = @shell(cmd =
+        \\set -euo pipefail
+        \\export PATH=${path_env}
+        \\${cmd}
+    )
+}.result
+
+git = (url, commit) shell(
+    path = [],
+    cmd =
+        \\${host}/bin/git init
+        \\${host}/bin/git remote add origin ${url}
+        \\${host}/bin/git fetch --depth=1 origin ${commit}
+        \\${host}/bin/git reset --hard ${commit}^{commit}
+)
+
+make_dir = (path) "${host}/bin/mkdir -p ${path}"
+make_path = (path) make_dir(path = "`${host}/bin/dirname ${path}`")
+
+github = (org, repo, commit) git(
+    url = "https://github.com/${org}/${repo}.git",
+    commit = commit,
+)
+
+fetch = (url, path) shell(
+    path = [],
+    cmd =
+        \\echo Downloading ${url}...
+        \\${make_path(path = path)}
+        \\${host}/bin/curl ${url} -Lo ${path}
+)
+
+fetch_sha256 = (url, path, checksum) {
+    fetched = fetch(url = url, path = path)
+    checked = shell(
+        path = [],
+        cmd =
+            \\echo Verifying sha256 checksum of ${url}...
+            \\${host}/bin/sha256sum ${fetched}/${path}
+            \\echo ${checksum} ${fetched}/${path} | ${host}/bin/sha256sum --check
+            \\${make_path(path = path)}
+            \\${host}/bin/ln -Ls ${fetched}/${path} ${path}
+    )
+}.checked
+
+fetch_md5 = (url, path, checksum) {
+    fetched = fetch(url = url, path = path)
+    checked = shell(
+        path = [],
+        cmd =
+            \\echo Verifying md5 checksum of ${url}...
+            \\${host}/bin/md5sum ${fetched}/${path}
+            \\echo ${checksum} ${fetched}/${path} | ${host}/bin/md5sum --check
+            \\${make_path(path = path)}
+            \\${host}/bin/ln -Ls ${fetched}/${path} ${path}
+    )
+}.checked
+
+fetch_minisign = (url, path, key) {
+    fetched = fetch(url = url, path = path)
+    sig = fetch(url = "${url}.minisig", path = "minisig")
+    checked = shell(
+        path = [],
+        cmd =
+            \\echo Verifying minisig of ${url}...
+            \\${host}/bin/minisign -Vm ${fetched}/${path} -x ${sig}/minisig -P ${key}
+            \\${make_path(path = path)}
+            \\${host}/bin/ln -Ls ${fetched}/${path} ${path}
+    )
+}.checked
+
+untar_strip_s = (path, strip)
+    \\echo Unpacking ${path}...
+    \\${host}/bin/tar --strip-components=${strip} -xf ${path}
+
+untar_s = (path) untar_strip_s(path = path, strip = "1")
+
+untar_strip = (path, strip) shell(
+    path = [],
+    cmd = untar_strip_s(path = path, strip = strip)
+)
+
+untar = (path) untar_strip(path = path, strip = "1")
